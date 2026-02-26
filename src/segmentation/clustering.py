@@ -64,7 +64,7 @@ class BehavioralClusterer:
               - months_data_available           : int
               - transaction_count_avg_monthly   : float
               - business_mcc_credit_share       : float
-              - avg_credit_12m                  : float
+              - avg_monthly_credit_12m                  : float
               - cv_monthly_credit_12m           : float
               - months_with_zero_credit         : int
               - investment_credit_frequency     : float
@@ -92,7 +92,7 @@ class BehavioralClusterer:
             (df["business_mcc_credit_share"] >= self.sme_business_credit_ratio)
             | (
                 (df["inflow_outflow_ratio"] > 1.5)          # High credit cycling
-                & (df["avg_credit_12m"] > 50000)            # High volume (THB)
+                & (df["avg_monthly_credit_12m"] > 50000)            # High volume (THB)
                 & (df["credit_concentration_index"] < 0.5)  # Multiple payers
             )
         )
@@ -103,7 +103,7 @@ class BehavioralClusterer:
         passive_mask = remaining & (
             (df["investment_credit_frequency"] > 0.3)        # Regular investment credits
             & (df["transaction_count_avg_monthly"] < 15)     # Low overall activity
-            & (df["avg_credit_12m"] < df["avg_credit_12m"].quantile(0.5))
+            & (df["avg_monthly_credit_12m"] < df["avg_monthly_credit_12m"].quantile(0.5))
         )
         segments[passive_mask] = PASSIVE_INVESTOR
         remaining = segments == UNASSIGNED

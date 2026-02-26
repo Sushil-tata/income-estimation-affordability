@@ -78,10 +78,10 @@ class LGBMIncomeModel:
                       if k not in ("n_estimators",)}
         lgb_params["verbose"] = -1
 
+        lgb_params["objective"] = obj_fn   # LightGBM 4.x: custom obj goes in params
         self._model = lgb.train(
             lgb_params, dtrain,
             num_boost_round=self.n_estimators,
-            fobj=obj_fn,
             feval=eval_fn,
             valid_sets=[dtrain],
             callbacks=[lgb.early_stopping(30, verbose=False),
@@ -158,6 +158,7 @@ class SegmentModelTrainer:
         self.segment_results_: Dict[str, pd.DataFrame] = {}
         self.best_per_segment_: Dict[str, dict] = {}
         self.fitted_models_: Dict[str, Any] = {}   # segment → fitted model
+        self.segment_feat_cols_: Dict[str, List[str]] = {}  # segment → feature list
 
     def fit(
         self,
@@ -194,6 +195,7 @@ class SegmentModelTrainer:
             feat_cols = [c for c in feat_cols if c in X_seg.columns]
 
             logger.info(f"\nSegment {seg}: {len(X_seg):,} rows, {len(feat_cols)} features")
+            self.segment_feat_cols_[seg] = feat_cols
 
             results = self._search_segment(X_seg, y_seg, feat_cols, seg)
             self.segment_results_[seg] = pd.DataFrame(results).sort_values("cv_mae")
@@ -220,7 +222,9 @@ class SegmentModelTrainer:
         for seg, model in self.fitted_models_.items():
             mask = X[segment_col] == seg
             if mask.any():
-                result[mask] = model.predict(X[mask])
+                feat_cols = self.segment_feat_cols_.get(seg)
+                X_seg = X.loc[mask, feat_cols] if feat_cols else X[mask]
+                result[mask] = model.predict(X_seg)
 
         nan_mask = result.isna()
         if nan_mask.any():
@@ -307,10 +311,11 @@ class SegmentModelTrainer:
             y_val_true = y_true.iloc[val_idx]
 
             dtrain = lgb.Dataset(X_tr, label=y_tr.values)
+            cv_params = {"learning_rate": 0.05, "max_depth": 5, "num_leaves": 31,
+                         "verbose": -1, "n_jobs": -1,
+                         "objective": obj_fn}   # LightGBM 4.x: custom obj in params
             model = lgb.train(
-                {"learning_rate": 0.05, "max_depth": 5, "num_leaves": 31,
-                 "verbose": -1, "n_jobs": -1},
-                dtrain, num_boost_round=200, fobj=obj_fn,
+                cv_params, dtrain, num_boost_round=200,
                 callbacks=[lgb.log_evaluation(-1)],
             )
             preds = np.maximum(model.predict(X_val), 0)

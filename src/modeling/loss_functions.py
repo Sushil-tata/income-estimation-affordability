@@ -48,20 +48,21 @@ def huber_objective(delta: float = 10_000.0):
     ----------
     delta : float
         Transition point. Default 10,000 THB.
+
+    Note: LightGBM 4.x objective signature is f(preds, dataset).
     """
-    def objective(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        residual = y_pred - y_true
+    def objective(preds: np.ndarray, dataset) -> Tuple[np.ndarray, np.ndarray]:
+        y_true = dataset.get_label()
+        residual = preds - y_true
         abs_res = np.abs(residual)
         mask = abs_res <= delta
-
         grad = np.where(mask, residual, delta * np.sign(residual))
-        hess = np.where(mask, np.ones_like(residual), np.zeros_like(residual))
-        # Hessian: 1 in quadratic region, small constant in linear region
         hess = np.where(mask, np.ones_like(residual), delta / (abs_res + 1e-8))
         return grad, hess
 
-    def eval_fn(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
-        residual = np.abs(y_pred - y_true)
+    def eval_fn(preds: np.ndarray, dataset) -> Tuple[str, float, bool]:
+        y_true = dataset.get_label()
+        residual = np.abs(preds - y_true)
         loss = np.where(
             residual <= delta,
             0.5 * residual ** 2,
@@ -86,14 +87,16 @@ def quantile_objective(alpha: float = 0.50):
     alpha : float
         Target quantile. 0.25 = P25, 0.50 = median, etc.
     """
-    def objective(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        residual = y_true - y_pred
+    def objective(preds: np.ndarray, dataset) -> Tuple[np.ndarray, np.ndarray]:
+        y_true = dataset.get_label()
+        residual = y_true - preds
         grad = np.where(residual >= 0, -alpha, 1 - alpha)
         hess = np.ones_like(grad) * 0.5   # Constant hessian for pinball
         return grad, hess
 
-    def eval_fn(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
-        residual = y_true - y_pred
+    def eval_fn(preds: np.ndarray, dataset) -> Tuple[str, float, bool]:
+        y_true = dataset.get_label()
+        residual = y_true - preds
         loss = np.where(residual >= 0, alpha * residual, (alpha - 1) * residual).mean()
         return f"pinball_q{int(alpha*100)}", float(loss), False
 
@@ -114,16 +117,18 @@ def mape_objective(eps: float = 1_000.0):
     eps : float
         Minimum denominator. Default 1,000 THB.
     """
-    def objective(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def objective(preds: np.ndarray, dataset) -> Tuple[np.ndarray, np.ndarray]:
+        y_true = dataset.get_label()
         denom = np.maximum(np.abs(y_true), eps)
-        residual = y_pred - y_true
+        residual = preds - y_true
         grad = residual / (denom * len(y_true))
         hess = np.ones_like(grad) / (denom * len(y_true))
         return grad, hess
 
-    def eval_fn(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
+    def eval_fn(preds: np.ndarray, dataset) -> Tuple[str, float, bool]:
+        y_true = dataset.get_label()
         denom = np.maximum(np.abs(y_true), eps)
-        mape = np.mean(np.abs(y_pred - y_true) / denom)
+        mape = np.mean(np.abs(preds - y_true) / denom)
         return "mape", float(mape), False
 
     return objective, eval_fn
@@ -138,16 +143,18 @@ def log_rmse_objective(shift: float = 1.0):
     Naturally handles the large income range (15K–800K THB) by treating
     proportional errors equally at all income levels.
     """
-    def objective(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        log_pred = np.log(np.maximum(y_pred + shift, shift))
+    def objective(preds: np.ndarray, dataset) -> Tuple[np.ndarray, np.ndarray]:
+        y_true = dataset.get_label()
+        log_pred = np.log(np.maximum(preds + shift, shift))
         log_true = np.log(np.maximum(y_true + shift, shift))
         residual = log_pred - log_true
-        grad = residual / (y_pred + shift)
-        hess = (1 - residual) / (y_pred + shift) ** 2
+        grad = residual / (preds + shift)
+        hess = (1 - residual) / (preds + shift) ** 2
         return grad, hess
 
-    def eval_fn(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
-        log_pred = np.log(np.maximum(y_pred + shift, shift))
+    def eval_fn(preds: np.ndarray, dataset) -> Tuple[str, float, bool]:
+        y_true = dataset.get_label()
+        log_pred = np.log(np.maximum(preds + shift, shift))
         log_true = np.log(np.maximum(y_true + shift, shift))
         rmse = np.sqrt(np.mean((log_pred - log_true) ** 2))
         return "log_rmse", float(rmse), False
@@ -171,14 +178,16 @@ def tweedie_objective(p: float = 1.5):
     p : float
         Variance power. Default 1.5.
     """
-    def objective(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        y_pred_safe = np.maximum(y_pred, 1.0)
+    def objective(preds: np.ndarray, dataset) -> Tuple[np.ndarray, np.ndarray]:
+        y_true = dataset.get_label()
+        y_pred_safe = np.maximum(preds, 1.0)
         grad = -(y_true * y_pred_safe ** (1 - p) - y_pred_safe ** (2 - p))
         hess = y_true * (1 - p) * y_pred_safe ** (-p) + (2 - p) * y_pred_safe ** (1 - p)
         return grad, hess
 
-    def eval_fn(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
-        y_pred_safe = np.maximum(y_pred, 1.0)
+    def eval_fn(preds: np.ndarray, dataset) -> Tuple[str, float, bool]:
+        y_true = dataset.get_label()
+        y_pred_safe = np.maximum(preds, 1.0)
         if p == 2:
             loss = 2 * np.mean(np.log(y_pred_safe / y_true) + y_true / y_pred_safe - 1)
         else:
@@ -229,17 +238,19 @@ class SegmentQuantileObjective:
         self.segment_quantiles = segment_quantiles or self.DEFAULTS
         self.segment_labels = segment_labels
 
-    def objective(self, y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def objective(self, preds: np.ndarray, dataset) -> Tuple[np.ndarray, np.ndarray]:
         """LightGBM custom objective with per-sample alpha."""
+        y_true = dataset.get_label()
         alpha = self._get_alpha_vector(len(y_true))
-        residual = y_true - y_pred
+        residual = y_true - preds
         grad = np.where(residual >= 0, -alpha, 1 - alpha)
         hess = np.ones_like(grad) * 0.5
         return grad, hess
 
-    def eval_fn(self, y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[str, float, bool]:
+    def eval_fn(self, preds: np.ndarray, dataset) -> Tuple[str, float, bool]:
+        y_true = dataset.get_label()
         alpha = self._get_alpha_vector(len(y_true))
-        residual = y_true - y_pred
+        residual = y_true - preds
         loss = np.where(residual >= 0, alpha * residual, (alpha - 1) * residual).mean()
         return "seg_quantile", float(loss), False
 
@@ -267,7 +278,8 @@ class LossRegistry:
 
     Usage:
         obj, eval_fn = LossRegistry.get("huber", delta=5000)
-        model = lgb.train(params, dtrain, fobj=obj, feval=eval_fn)
+        params["objective"] = obj
+        model = lgb.train(params, dtrain, feval=eval_fn)
 
     Available losses:
         huber_5k, huber_10k, huber_20k
