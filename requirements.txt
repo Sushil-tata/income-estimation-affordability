@@ -3,7 +3,24 @@ scikit-learn>=1.3.0
 pandas>=2.0.0
 numpy>=1.24.0
 pyyaml>=6.0
+scipy>=1.11.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 jupyter>=1.0.0
 ipykernel>=6.0.0
+python-dateutil>=2.8.0
+
+# Feature selection
+shap>=0.44.0
+
+# Deep learning (LSTM, TCN) — CPU-only for GDZ
+# Install: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.0.0
+
+# TabPFN v2 — downloads ~50MB weights on first use (needs network once)
+# Install: pip install tabpfn
+tabpfn>=2.0.0
+
+# AutoGluon — optional, ~2GB install, check GDZ package policy first
+# Install: pip install autogluon.tabular
+# autogluon.tabular>=1.0.0
