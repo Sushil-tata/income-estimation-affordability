@@ -130,9 +130,13 @@ class BCIScorer:
         result["bci_score"] = result[["bci_raw_score", "segment_bci_cap"]].min(axis=1).round(1)
 
         # ── BCI Band Assignment ────────────────────────────────────────────
-        result["bci_band"], result["bci_policy"], result["income_haircut"] = zip(
-            *result["bci_score"].apply(self._assign_band)
+        band_assignments = result["bci_score"].apply(
+            lambda s: pd.Series(self._assign_band(s),
+                                index=["bci_band", "bci_policy", "income_haircut"])
         )
+        result["bci_band"] = band_assignments["bci_band"]
+        result["bci_policy"] = band_assignments["bci_policy"]
+        result["income_haircut"] = band_assignments["income_haircut"]
 
         # ── Adjusted Income ────────────────────────────────────────────────
         result["adjusted_income"] = (

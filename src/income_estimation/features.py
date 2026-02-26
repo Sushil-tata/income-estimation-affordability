@@ -72,12 +72,10 @@ class FeatureEngineer:
         # ── BALANCE ────────────────────────────────────────────────────────
         features.update(self._balance_features(grouped))
 
-        # ── DERIVED / COMPOSITE ────────────────────────────────────────────
-        feat_df = pd.DataFrame(features)
-        feat_df = self._derived_features(feat_df)
-
         # ── SEGMENTATION SIGNALS ───────────────────────────────────────────
         features.update(self._segmentation_signals(grouped))
+
+        # ── DERIVED / COMPOSITE ────────────────────────────────────────────
         feat_df = pd.DataFrame(features)
         feat_df = self._derived_features(feat_df)
 
@@ -96,8 +94,8 @@ class FeatureEngineer:
         )
         f["median_monthly_credit_12m"] = credits.median()
         f["cv_monthly_credit_12m"] = credits.apply(
-            lambda x: x.std() / x.mean() if x.mean() > 0 else np.nan
-        )
+            lambda x: x.std() / x.mean() if x.mean() > 0 and len(x) > 1 else np.nan
+        ).fillna(1.0)  # 1.0 = worst-case (fully volatile) for customers with 0 or 1 month
         f["months_with_zero_credit"] = grouped["total_credit_amount"].apply(
             lambda x: (x == 0).sum()
         )
@@ -108,10 +106,10 @@ class FeatureEngineer:
         f["avg_irregular_credit_12m"] = grouped["irregular_credit_amount"].mean()
         f["recurring_to_total_credit_ratio"] = (
             f["avg_recurring_credit_12m"] / f["avg_monthly_credit_12m"].replace(0, np.nan)
-        )
+        ).fillna(0.0)
         f["cv_recurring_credit_12m"] = grouped["recurring_credit_amount"].apply(
-            lambda x: x.std() / x.mean() if x.mean() > 0 else np.nan
-        )
+            lambda x: x.std() / x.mean() if x.mean() > 0 and len(x) > 1 else np.nan
+        ).fillna(1.0)
 
         # Recurring credit streak (consecutive months with recurring credit)
         f["recurring_credit_streak_months"] = grouped["recurring_credit_amount"].apply(
@@ -198,15 +196,27 @@ class FeatureEngineer:
 
     def _derived_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df["net_monthly_flow_avg"] = df["avg_monthly_credit_12m"] - df["avg_total_debit_12m"]
-        df["inflow_outflow_ratio"] = df["avg_monthly_credit_12m"] / df["avg_total_debit_12m"].replace(0, np.nan)
-        df["savings_rate_proxy"] = df["net_monthly_flow_avg"] / df["avg_monthly_credit_12m"].replace(0, np.nan)
-        df["commitment_ratio"] = df["avg_commitment_amount_12m"] / df["avg_total_debit_12m"].replace(0, np.nan)
-        df["lifestyle_ratio"] = df["avg_lifestyle_amount_12m"] / df["avg_total_debit_12m"].replace(0, np.nan)
-        df["balance_to_max_credit_ratio"] = df["avg_eom_balance_3m"] / df["max_monthly_credit_3m"].replace(0, np.nan)
-        df["income_to_obligation_ratio"] = df["avg_recurring_credit_12m"] / df["avg_commitment_amount_12m"].replace(0, np.nan)
+        df["inflow_outflow_ratio"] = (
+            df["avg_monthly_credit_12m"] / df["avg_total_debit_12m"].replace(0, np.nan)
+        ).fillna(1.0)
+        df["savings_rate_proxy"] = (
+            df["net_monthly_flow_avg"] / df["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+        df["commitment_ratio"] = (
+            df["avg_commitment_amount_12m"] / df["avg_total_debit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+        df["lifestyle_ratio"] = (
+            df["avg_lifestyle_amount_12m"] / df["avg_total_debit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+        df["balance_to_max_credit_ratio"] = (
+            df["avg_eom_balance_3m"] / df["max_monthly_credit_3m"].replace(0, np.nan)
+        ).fillna(0.0)
+        df["income_to_obligation_ratio"] = (
+            df["avg_recurring_credit_12m"] / df["avg_commitment_amount_12m"].replace(0, np.nan)
+        ).fillna(0.0)
         df["financial_stress_index"] = (
             df["months_below_1000_balance"] / df["months_data_available"].replace(0, np.nan)
-        )
+        ).fillna(0.0)
         return df
 
     @staticmethod

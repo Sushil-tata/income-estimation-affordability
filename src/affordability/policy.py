@@ -155,12 +155,25 @@ class PolicyEngine:
         output = pd.DataFrame(index=features.index)
         output["segment"] = features[segment_col]
 
-        # Income
+        # Income — some columns only exist when using IncomeEstimationPipeline;
+        # fall back gracefully when using SegmentModelTrainer or manual paths.
         output["income_source"] = income_results["income_source"]
         output["income_estimate_raw"] = income_results["income_estimate"]
-        output["income_band"] = income_results["income_band"]
-        output["income_q25"] = income_results["income_q25"]
-        output["income_q75"] = income_results["income_q75"]
+        output["income_band"] = (
+            income_results["income_band"]
+            if "income_band" in income_results.columns
+            else pd.Series("UNKNOWN", index=income_results.index)
+        )
+        output["income_q25"] = (
+            income_results["income_q25"]
+            if "income_q25" in income_results.columns
+            else income_results["income_estimate"] * 0.85
+        )
+        output["income_q75"] = (
+            income_results["income_q75"]
+            if "income_q75" in income_results.columns
+            else income_results["income_estimate"] * 1.15
+        )
 
         # BCI
         output["bci_score"] = bci_results["bci_score"]

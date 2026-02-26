@@ -142,6 +142,7 @@ class IncomeBandClassifier:
     def _fit_per_segment(self, X: pd.DataFrame, y_bands: pd.Series, segment_col: str) -> None:
         self.le.fit(y_bands)
         segments = X[segment_col].unique()
+        skipped_segs = []
 
         for seg in segments:
             mask = X[segment_col] == seg
@@ -149,7 +150,8 @@ class IncomeBandClassifier:
             y_seg = y_bands[mask]
 
             if len(X_seg) < 100:
-                logger.warning(f"Segment {seg}: only {len(X_seg)} records — using unified model")
+                logger.warning(f"Segment {seg}: only {len(X_seg)} records — will use unified fallback")
+                skipped_segs.append(seg)
                 continue
 
             logger.info(f"Training segment {seg}: {len(X_seg):,} records")
@@ -165,6 +167,11 @@ class IncomeBandClassifier:
             dtrain = lgb.Dataset(X_seg, label=y_enc)
             self.models[seg] = lgb.train(params, dtrain, num_boost_round=n_est)
 
+        # Always train a unified fallback used by small/unseen segments
+        if skipped_segs or "unified" not in self.models:
+            logger.info(f"Training unified fallback model (covers: {skipped_segs or 'all unseen segments'})")
+            self._fit_unified(X[self.feature_cols], y_bands)
+
     def predict(self, X: pd.DataFrame, segment_col: Optional[str] = "segment") -> pd.DataFrame:
         """
         Predict income band and probabilities.
@@ -174,6 +181,15 @@ class IncomeBandClassifier:
         pd.DataFrame with columns:
           predicted_band, band_probability_*, model_confidence
         """
+        # Fill any feature columns missing from X with 0 to avoid crashes
+        missing_cols = set(self.feature_cols) - set(X.columns)
+        if missing_cols:
+            logger.warning(f"predict(): {len(missing_cols)} feature columns missing from X, "
+                           f"filling with 0: {sorted(missing_cols)}")
+            X = X.copy()
+            for col in missing_cols:
+                X[col] = 0.0
+
         results = []
 
         if self.use_segments and segment_col in X.columns:
@@ -181,6 +197,8 @@ class IncomeBandClassifier:
                 mask = X[segment_col] == seg
                 model_key = seg if seg in self.models else "unified"
                 if model_key not in self.models:
+                    logger.warning(f"No model for segment '{seg}' and no unified fallback — "
+                                   f"using first available model")
                     model_key = list(self.models.keys())[0]
 
                 probs = self.models[model_key].predict(X.loc[mask, self.feature_cols])

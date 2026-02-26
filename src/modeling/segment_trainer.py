@@ -221,6 +221,17 @@ class SegmentModelTrainer:
             mask = X[segment_col] == seg
             if mask.any():
                 result[mask] = model.predict(X[mask])
+
+        nan_mask = result.isna()
+        if nan_mask.any():
+            unseen = (
+                X.loc[nan_mask, segment_col].unique().tolist()
+                if segment_col in X.columns else []
+            )
+            logger.warning(
+                f"predict(): {nan_mask.sum()} customers have segments not in fitted_models_ "
+                f"{unseen} — filling with 0. Consider retraining with these segments."
+            )
         return result.fillna(0)
 
     def results_summary(self) -> pd.DataFrame:
