@@ -403,3 +403,19 @@ class LabelEngineer:
         coefs = pd.Series(ridge.coef_, index=feat_cols)
         coefs["intercept"] = ridge.intercept_
         return coefs
+
+    # ── PERSISTENCE ─────────────────────────────────────────────────────────
+
+    def save(self, path: str) -> None:
+        import pickle
+        from pathlib import Path
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
+        logger.info(f"LabelEngineer saved: {path}")
+
+    @classmethod
+    def load(cls, path: str) -> "LabelEngineer":
+        import pickle
+        with open(path, "rb") as f:
+            return pickle.load(f)

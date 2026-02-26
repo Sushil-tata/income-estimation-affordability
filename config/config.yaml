@@ -105,6 +105,83 @@ observation:
   dev_end: "2024-07-01"
   min_history_months: 12
 
+# --- Advanced Modeling (SegmentModelTrainer) ---
+advanced_modeling:
+  # LightGBM loss functions to evaluate per segment
+  lgb_losses:
+    - "huber_10k"
+    - "huber_20k"
+    - "quantile_p30"
+    - "quantile_p40"
+    - "quantile_p50"
+    - "log_rmse"
+    - "mape"
+    - "tweedie_p15"
+
+  # Label strategies to evaluate per segment
+  label_strategies:
+    - "raw"
+    - "robust"
+    - "quantile"
+    - "shrunk_composite"
+
+  # Deep learning flags (set false if libraries unavailable in GDZ)
+  include_lstm: true
+  include_tabpfn: true
+  include_autogluon: false          # Heavy install ~2GB — check GDZ policy
+
+  # LSTM model config
+  lstm:
+    hidden_size: 64
+    n_layers: 2
+    dropout: 0.20
+    lr: 0.001
+    n_epochs: 50
+    batch_size: 256
+    patience: 7
+    n_months: 12
+
+  # TabPFN v2 config
+  tabpfn:
+    max_train_rows: 10000           # Rows above this are sampled
+    n_estimators: 8
+    log_target: true
+
+  # AutoGluon config (if enabled)
+  autogluon:
+    time_limit: 300                 # Seconds — cap for GDZ compute
+    presets: "medium_quality"
+    excluded_model_types: ["NN_TORCH", "FASTAI"]
+
+  # Segment trainer search config
+  segment_trainer:
+    cv_folds: 5
+    max_rows_per_segment: 20000
+    random_state: 42
+
+# --- Feature Selection ---
+feature_selection:
+  variance_threshold: 0.01          # Drop features with variance < this
+  correlation_threshold: 0.92       # Drop redundant correlated features
+  top_k: 0.60                       # Supervised methods target top 60% of features
+  min_votes: 2                      # Consensus: feature must be picked by >= 2/3 methods
+  run_boruta: true                  # Disable for faster iteration
+  run_stability: false              # Enable for vintage-level stability check
+  n_bootstrap: 20                   # Bootstrap runs for stability
+  min_stability: 0.60               # Min fraction of runs feature must be selected
+
+# --- Label Engineering ---
+label_engineering:
+  shrinkage_alpha: 1.0              # Ridge alpha for composite label OLS
+  winsor_pct: 0.025                 # Winsorization at 2.5% tails
+  segment_quantile_targets:         # Quantile target per segment for QUANTILE strategy
+    PAYROLL: 0.50
+    SALARY_LIKE: 0.40
+    SME: 0.30
+    GIG_FREELANCE: 0.25
+    PASSIVE_INVESTOR: 0.40
+    THIN: 0.35
+
 # --- Data Paths (relative to project root, actual data stays in GDZ) ---
 paths:
   raw_data: "data/raw/"

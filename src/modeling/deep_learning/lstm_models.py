@@ -238,19 +238,10 @@ class _LSTMBase:
         return np.expm1(log_preds)   # Back from log space
 
     def save(self, path: str):
-        torch = _check_torch()
+        """Pickle the full object (model architecture + weights + scaler)."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-        torch.save({
-            "model_state": self._model.state_dict(),
-            "scaler": self._scaler,
-            "config": {
-                "hidden_size": self.hidden_size,
-                "n_layers": self.n_layers,
-                "dropout": self.dropout,
-                "n_months": self.n_months,
-                "feature_cols": self.feature_cols,
-            }
-        }, path)
+        with open(path, "wb") as f:
+            pickle.dump(self, f)
         logger.info(f"Model saved: {path}")
 
     def evaluate(self, monthly_df: pd.DataFrame, y: pd.Series,
@@ -293,13 +284,8 @@ class VanillaLSTM(_LSTMBase):
 
     @classmethod
     def load(cls, path: str) -> "VanillaLSTM":
-        torch = _check_torch()
-        ckpt = torch.load(path, map_location="cpu")
-        obj = cls(**ckpt["config"])
-        obj._scaler = ckpt["scaler"]
-        # Re-build and load weights
-        obj.fit.__func__  # trigger model build by loading weights lazily
-        return obj
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
 
 # ── BiLSTM ────────────────────────────────────────────────────────────────────
@@ -335,11 +321,8 @@ class BiLSTM(_LSTMBase):
 
     @classmethod
     def load(cls, path: str) -> "BiLSTM":
-        torch = _check_torch()
-        ckpt = torch.load(path, map_location="cpu")
-        obj = cls(**ckpt["config"])
-        obj._scaler = ckpt["scaler"]
-        return obj
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
 
 # ── LSTM with Attention ───────────────────────────────────────────────────────
@@ -388,11 +371,8 @@ class LSTMWithAttention(_LSTMBase):
 
     @classmethod
     def load(cls, path: str) -> "LSTMWithAttention":
-        torch = _check_torch()
-        ckpt = torch.load(path, map_location="cpu")
-        obj = cls(**ckpt["config"])
-        obj._scaler = ckpt["scaler"]
-        return obj
+        with open(path, "rb") as f:
+            return pickle.load(f)
 
 
 # ── TCN — Temporal Convolutional Network ─────────────────────────────────────
@@ -469,8 +449,5 @@ class TCN(_LSTMBase):
 
     @classmethod
     def load(cls, path: str) -> "TCN":
-        torch = _check_torch()
-        ckpt = torch.load(path, map_location="cpu")
-        obj = cls(**ckpt["config"])
-        obj._scaler = ckpt["scaler"]
-        return obj
+        with open(path, "rb") as f:
+            return pickle.load(f)
