@@ -225,6 +225,8 @@ class LabelEngineer:
                     )
                     model.fit(X_tr.fillna(0), y_tr)
                     preds = model.predict(X_val.fillna(0))
+                    # Invert label transform so MAE is always in THB (raw income space)
+                    preds = self.inverse_transform(preds, strat)
                     fold_maes.append(np.mean(np.abs(y_val_true - preds)))
 
                 results.append({
@@ -389,6 +391,36 @@ class LabelEngineer:
             result[mask] = blended.values
 
         return result.fillna(y_verified)
+
+    # ── INVERSE TRANSFORM ────────────────────────────────────────────────────
+
+    @staticmethod
+    def inverse_transform(predictions: np.ndarray, strategy: str) -> np.ndarray:
+        """
+        Invert the label transformation so model predictions are back in THB.
+
+        This MUST be called on raw model output when the model was trained with
+        a transformed label strategy, before computing MAE or returning income
+        estimates to downstream components.
+
+        Parameters
+        ----------
+        predictions : np.ndarray
+            Raw model predictions (in transformed space).
+        strategy : str
+            The label strategy used during training.
+
+        Returns
+        -------
+        np.ndarray
+            Predictions in original THB income space.
+        """
+        if strategy == "log":
+            # log1p → expm1 (exact inverse of np.log1p)
+            return np.expm1(np.maximum(predictions, 0.0))
+        # All other strategies (raw, robust, composite, shrunk_composite, quantile)
+        # predict directly in THB space — no inversion needed.
+        return predictions
 
     def _fit_composite(self, X: pd.DataFrame, y: pd.Series) -> pd.Series:
         """Fit Ridge regression for composite label coefficients."""

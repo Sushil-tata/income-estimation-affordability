@@ -30,6 +30,12 @@ class FeatureEngineer:
         Reference date (YYYY-MM-DD) for lookback calculation.
     """
 
+    # Data tier thresholds (months of history)
+    TIER_12M_MIN = 12    # Full feature set, full confidence
+    TIER_9M_MIN  = 9     # Most features, annualised, BCI data_richness capped at 0.75
+    TIER_6M_MIN  = 6     # Reduced features, BCI data_richness capped at 0.50
+    TIER_THIN    = 0     # < 6 months → THIN, no ML model, policy floor only
+
     def __init__(self, lookback_months: int = 12, observation_date: Optional[str] = None):
         self.lookback_months = lookback_months
         self.observation_date = pd.to_datetime(observation_date) if observation_date else None
@@ -79,7 +85,17 @@ class FeatureEngineer:
         feat_df = pd.DataFrame(features)
         feat_df = self._derived_features(feat_df)
 
+        # ── DATA WINDOW TIER ───────────────────────────────────────────────
+        # Assign data_tier based on months of history available.
+        # Downstream components (BCI, clustering) use this to cap confidence
+        # and to bypass full feature computation for thin-history customers.
+        feat_df["data_tier"] = feat_df["months_data_available"].apply(
+            self._assign_data_tier
+        )
+
         logger.info(f"Feature matrix: {feat_df.shape[0]:,} customers × {feat_df.shape[1]} features")
+        tier_counts = feat_df["data_tier"].value_counts().to_dict()
+        logger.info(f"Data tiers: {tier_counts}")
         return feat_df
 
     # ── PRIVATE METHODS ─────────────────────────────────────────────────────
@@ -127,6 +143,10 @@ class FeatureEngineer:
         f["months_with_salary_pattern"] = grouped["has_payroll_credit"].sum()
 
         # Credit source concentration
+        # Note: credit_concentration_index is intentionally distinct from
+        # dominant_credit_source_share — it will be replaced by a true HHI
+        # proxy in Phase 1 feature expansion. For now use the same source
+        # but keep separate columns so Phase 1 can overwrite only one.
         f["dominant_credit_source_share"] = grouped["dominant_credit_source_share"].mean()
         f["credit_concentration_index"] = grouped["dominant_credit_source_share"].mean()
 
@@ -218,6 +238,29 @@ class FeatureEngineer:
             df["months_below_1000_balance"] / df["months_data_available"].replace(0, np.nan)
         ).fillna(0.0)
         return df
+
+    @staticmethod
+    def _assign_data_tier(months: int) -> str:
+        """
+        Classify a customer into a data confidence tier based on history length.
+
+        Tiers
+        -----
+        12M  : ≥ 12 months — full feature set, full model confidence
+        9M   : 9–11 months — features computed, annualised where needed,
+               BCI data_richness score capped at 0.75
+        6M   : 6–8 months  — limited features, BCI data_richness capped at 0.50
+        THIN : < 6 months  — insufficient history; policy floor applied,
+               no ML income model, BCI data_richness capped at 0.20
+        """
+        if months >= 12:
+            return "12M"
+        elif months >= 9:
+            return "9M"
+        elif months >= 6:
+            return "6M"
+        else:
+            return "THIN"
 
     @staticmethod
     def _max_consecutive_positive(series: pd.Series) -> int:

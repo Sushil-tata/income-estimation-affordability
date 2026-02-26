@@ -32,7 +32,7 @@ import logging
 import pickle
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
-from sklearn.model_selection import KFold
+from sklearn.model_selection import TimeSeriesSplit
 
 import lightgbm as lgb
 
@@ -256,7 +256,11 @@ class SegmentModelTrainer:
         feat_cols: List[str],
         segment: str,
     ) -> List[dict]:
-        kf = KFold(n_splits=self.cv_folds, shuffle=True, random_state=self.random_state)
+        # TimeSeriesSplit respects temporal ordering: validation fold is always
+        # AFTER training fold. This prevents validating on the past.
+        # n_splits=cv_folds with gap=0 — adjust gap if monthly data has
+        # look-ahead in feature windows.
+        kf = TimeSeriesSplit(n_splits=self.cv_folds)
         results = []
 
         for label_strat in self.label_strategies:
@@ -301,7 +305,7 @@ class SegmentModelTrainer:
         y_label: pd.Series,
         y_true: pd.Series,
         loss_name: str,
-        kf: KFold,
+        kf: TimeSeriesSplit,
     ) -> float:
         obj_fn, eval_fn = LossRegistry.get(loss_name)
         maes = []
@@ -327,7 +331,7 @@ class SegmentModelTrainer:
         X: pd.DataFrame,
         y_label: pd.Series,
         y_true: pd.Series,
-        kf: KFold,
+        kf: TimeSeriesSplit,
     ) -> float:
         from .tabpfn_model import TabPFNModel
         maes = []

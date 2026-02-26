@@ -6,10 +6,22 @@
 # --- BOT Regulatory Norms ---
 bot_norms:
   minimum_income_thb: 15000          # Monthly gross income floor (THB)
-  dscr_cap: 0.40                     # Debt Service Coverage Ratio cap (flexible)
-  dscr_cap_low_income: 0.40          # DSCR cap for income < 30K
-  dscr_cap_mid_income: 0.40          # DSCR cap for income 30K–100K
-  dscr_cap_high_income: 0.40         # DSCR cap for income > 100K
+  dscr_cap: 0.40                     # Default DSCR cap (fallback when persona unknown)
+
+  # Persona-aware DSCR caps (used by AffordabilityEngine when persona is available)
+  # L2 is intentionally higher: its income estimate is already a P30 lower bound,
+  # so applying a tight DSCR would double-penalise unstructured income customers.
+  dscr_cap_by_persona:
+    PAYROLL: 0.40
+    L0:      0.40
+    L1:      0.38
+    L2:      0.45
+    THIN:    0.35
+    # Legacy segment names (backward compatibility during persona transition)
+    SALARY_LIKE:      0.40
+    SME:              0.38
+    GIG_FREELANCE:    0.45
+    PASSIVE_INVESTOR: 0.40
 
 # --- Income Bands (THB/month) ---
 income_bands:
@@ -51,12 +63,17 @@ bci:
       haircut: 0.00
       policy: "DECLINE_OR_REFER"
   segment_bci_caps:
+    # New persona labels (Phase 2+)
     PAYROLL: 100
-    SALARY_LIKE: 90
-    SME: 70
-    GIG_FREELANCE: 65
+    L0:      88
+    L1:      75
+    L2:      60
+    THIN:    30
+    # Legacy segment labels (backward compatibility during transition)
+    SALARY_LIKE:      90
+    SME:              70
+    GIG_FREELANCE:    65
     PASSIVE_INVESTOR: 75
-    THIN: 30
 
 # --- Segmentation Thresholds ---
 segmentation:
@@ -73,6 +90,21 @@ features:
   lookback_months: 12                  # Minimum history window
   monthly_aggregate: true              # Use monthly aggregates only
   min_active_months: 3                 # Min months with any activity
+
+  # Data window tiers — determines confidence level and BCI data_richness cap
+  data_tiers:
+    tier_12m_min_months: 12            # Full feature set, no cap
+    tier_9m_min_months:  9             # Annualised features, cap = 0.75
+    tier_6m_min_months:  6             # Limited features, cap = 0.50
+    # < 6 months → THIN automatically, policy floor only
+
+# --- Transaction Filter ---
+transaction_filter:
+  exclude_tagged: true                 # Apply column-based exclusions (Mode A)
+  apply_heuristics: true               # Apply chit fund heuristic (Mode B)
+  spike_review_threshold: 5.0          # Credits > N× median flagged for review
+  chit_fund_min_multiple: 8.0          # Credits >= N× median excluded as chit fund
+  chit_fund_min_history_months: 6      # Min history before chit fund detection
 
 # --- Model Parameters ---
 models:
@@ -158,6 +190,20 @@ advanced_modeling:
     cv_folds: 5
     max_rows_per_segment: 20000
     random_state: 42
+
+  # Mixture-of-Experts blending
+  # When the router's top-class probability is below this threshold, blend
+  # the top-2 persona models weighted by their probabilities.
+  moe_confidence_threshold: 0.70
+
+  # Persona stability smoothing (stateless exponential smoothing)
+  # smoothed_probs = alpha * new_probs + (1 - alpha) * prev_probs
+  # Switch persona only if: P(new) - P(current) > stability_switch_delta
+  # for the smoothed probability vector.
+  persona_stability:
+    smoothing_alpha: 0.50
+    switch_delta: 0.15            # Min probability margin to accept a switch
+    target_switch_rate: 0.05      # Target: < 5% of customers switch persona monthly
 
 # --- Feature Selection ---
 feature_selection:
