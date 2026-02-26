@@ -1,0 +1,114 @@
+# ============================================================
+# Income Estimation & Affordability Framework — Configuration
+# CardX / SCB Group | GDZ Environment
+# ============================================================
+
+# --- BOT Regulatory Norms ---
+bot_norms:
+  minimum_income_thb: 15000          # Monthly gross income floor (THB)
+  dscr_cap: 0.40                     # Debt Service Coverage Ratio cap (flexible)
+  dscr_cap_low_income: 0.40          # DSCR cap for income < 30K
+  dscr_cap_mid_income: 0.40          # DSCR cap for income 30K–100K
+  dscr_cap_high_income: 0.40         # DSCR cap for income > 100K
+
+# --- Income Bands (THB/month) ---
+income_bands:
+  labels:
+    - "BAND_1_BELOW_15K"
+    - "BAND_2_15K_30K"
+    - "BAND_3_30K_50K"
+    - "BAND_4_50K_100K"
+    - "BAND_5_ABOVE_100K"
+  boundaries: [0, 15000, 30000, 50000, 100000, 9999999]
+
+# --- BCI Configuration ---
+bci:
+  weights:
+    income_stability: 0.30
+    segment_clarity: 0.20
+    data_richness: 0.20
+    model_confidence: 0.20
+    behavioral_consistency: 0.10
+  bands:
+    high:
+      min: 80
+      max: 100
+      haircut: 1.00       # Use income at face value
+      policy: "STP"
+    medium:
+      min: 60
+      max: 79
+      haircut: 0.80       # 80% of estimated income
+      policy: "STP"
+    low:
+      min: 40
+      max: 59
+      haircut: 0.60       # 60% of estimated income
+      policy: "MANUAL_REVIEW"
+    very_low:
+      min: 0
+      max: 39
+      haircut: 0.00
+      policy: "DECLINE_OR_REFER"
+  segment_bci_caps:
+    PAYROLL: 100
+    SALARY_LIKE: 90
+    SME: 70
+    GIG_FREELANCE: 65
+    PASSIVE_INVESTOR: 75
+    THIN: 30
+
+# --- Segmentation Thresholds ---
+segmentation:
+  payroll_min_months: 3                # Min months of payroll credits to qualify
+  salary_like_cv_threshold: 0.25       # CV of monthly credits <= this → salary-like
+  salary_like_min_months: 6
+  thin_min_months_required: 6          # Below this → THIN segment
+  thin_min_transactions: 5             # Monthly avg transactions below this → THIN
+  sme_business_credit_ratio: 0.40      # Business MCC credit share threshold
+  max_credit_lookback_months: 3        # Lookback for max credit feature
+
+# --- Feature Engineering ---
+features:
+  lookback_months: 12                  # Minimum history window
+  monthly_aggregate: true              # Use monthly aggregates only
+  min_active_months: 3                 # Min months with any activity
+
+# --- Model Parameters ---
+models:
+  income_band_classifier:
+    type: "lightgbm"
+    n_estimators: 500
+    learning_rate: 0.05
+    max_depth: 6
+    num_leaves: 31
+    min_child_samples: 50
+    subsample: 0.8
+    colsample_bytree: 0.8
+    class_weight: "balanced"
+    random_state: 42
+    n_jobs: -1
+  income_regression:
+    type: "quantile_lgbm"
+    quantiles: [0.25, 0.50, 0.75]      # Lower, median, upper estimates
+    n_estimators: 500
+    learning_rate: 0.05
+    max_depth: 5
+    num_leaves: 31
+    min_child_samples: 50
+    random_state: 42
+    n_jobs: -1
+
+# --- Observation Window ---
+observation:
+  dev_start: "2024-01-01"
+  dev_end: "2024-07-01"
+  min_history_months: 12
+
+# --- Data Paths (relative to project root, actual data stays in GDZ) ---
+paths:
+  raw_data: "data/raw/"
+  processed_data: "data/processed/"
+  sample_data: "data/sample/"
+  model_artifacts: "artifacts/models/"
+  reports: "artifacts/reports/"

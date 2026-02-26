@@ -1,0 +1,178 @@
+# ============================================================
+# Feature Taxonomy — Customer P&L Framework
+# Transaction Description → Sub-category → Broader Category
+# ============================================================
+
+# --- CREDITS SIDE (Income / Inflow Signals) ---
+credits:
+  recurring_credits:
+    description: "Regular, predictable inflows — salary-like"
+    sub_categories:
+      - salary_transfer
+      - pension_transfer
+      - government_benefit
+      - regular_inter_bank_transfer
+    features:
+      - monthly_recurring_credit_amount
+      - monthly_recurring_credit_count
+      - recurring_credit_cv                   # Coefficient of variation
+      - recurring_credit_dominant_share       # Max single source / total
+      - recurring_credit_streak_months        # Consecutive months with credit
+
+  irregular_credits:
+    description: "Ad-hoc, variable inflows"
+    sub_categories:
+      - one_time_transfer
+      - cash_deposit
+      - cheque_deposit
+      - freelance_payment
+      - business_receipt
+    features:
+      - monthly_irregular_credit_amount
+      - monthly_irregular_credit_count
+      - irregular_credit_max_single
+      - irregular_to_total_credit_ratio
+
+  investment_credits:
+    description: "Returns from investments, FD maturity"
+    sub_categories:
+      - fd_maturity
+      - dividend
+      - interest_credit
+      - mutual_fund_redemption
+    features:
+      - monthly_investment_credit_amount
+      - investment_credit_frequency
+
+# --- DEBITS SIDE (Outflow / Expense Signals) ---
+debits:
+
+  # ── BROADER CATEGORY A: COMMITMENTS ─────────────────────────
+  commitments:
+    description: "Fixed obligations — existing debt servicing"
+    sub_categories:
+      loan_repayment:
+        description: "EMI payments, personal loan instalments"
+        features:
+          - monthly_loan_repayment_amount
+          - monthly_loan_repayment_count
+          - loan_repayment_regularity_score
+          - loan_repayment_to_income_ratio
+      credit_card_payment:
+        description: "Credit card bill payments"
+        features:
+          - monthly_cc_payment_amount
+          - monthly_cc_payment_count
+          - cc_payment_regularity_score
+      insurance_premium:
+        description: "Life, health, vehicle insurance"
+        features:
+          - monthly_insurance_amount
+          - insurance_payment_regularity
+      hire_purchase:
+        description: "Vehicle HP, equipment financing"
+        features:
+          - monthly_hire_purchase_amount
+          - hire_purchase_regularity
+
+  # ── BROADER CATEGORY B: RECURRING ───────────────────────────
+  recurring:
+    description: "Regular living expenses — non-discretionary"
+    sub_categories:
+      utilities:
+        description: "Electricity, water, gas"
+        features:
+          - monthly_utility_amount
+          - utility_payment_regularity
+      telecom:
+        description: "Mobile, internet, cable TV"
+        features:
+          - monthly_telecom_amount
+          - telecom_payment_regularity
+      rent:
+        description: "Rent / condo fee payments"
+        features:
+          - monthly_rent_amount
+          - rent_payment_regularity
+      subscriptions:
+        description: "OTT, streaming, membership fees"
+        features:
+          - monthly_subscription_amount
+          - subscription_count
+      grocery_essentials:
+        description: "Supermarket, pharmacy, essentials"
+        features:
+          - monthly_grocery_amount
+          - grocery_frequency
+
+  # ── BROADER CATEGORY C: LIFESTYLE ───────────────────────────
+  lifestyle:
+    description: "Discretionary spending"
+    sub_categories:
+      travel:
+        description: "Airlines, hotels, travel agencies"
+        features:
+          - monthly_travel_amount
+          - travel_frequency
+          - travel_amount_max_single
+          - travel_months_active
+      dining_fnb:
+        description: "Restaurants, food delivery, cafes"
+        features:
+          - monthly_dining_amount
+          - dining_frequency
+      shopping:
+        description: "Retail, fashion, electronics"
+        features:
+          - monthly_shopping_amount
+          - shopping_frequency
+          - shopping_online_share
+      entertainment:
+        description: "Cinema, events, gaming"
+        features:
+          - monthly_entertainment_amount
+          - entertainment_frequency
+      health_wellness:
+        description: "Gym, spa, medical (elective)"
+        features:
+          - monthly_health_wellness_amount
+
+# --- BALANCE & ACCOUNT FEATURES ---
+balance_features:
+  - avg_eom_balance_3m
+  - avg_eom_balance_6m
+  - avg_eom_balance_12m
+  - max_eom_balance_3m
+  - min_eom_balance_3m
+  - balance_cv_12m
+  - balance_to_income_ratio
+  - avg_daily_balance_3m
+  - balance_trend_slope                 # Linear trend over 12M
+  - months_below_1000_balance           # Financial stress indicator
+
+# --- DERIVED / COMPOSITE FEATURES ---
+derived_features:
+  - net_monthly_flow_avg                # Total credits - total debits (avg 12M)
+  - net_monthly_flow_cv                 # Stability of net flow
+  - commitment_ratio                    # Commitments / total debits
+  - recurring_expense_ratio             # Recurring / total debits
+  - lifestyle_ratio                     # Lifestyle / total debits
+  - savings_rate_proxy                  # (Credits - Debits) / Credits
+  - income_to_obligation_ratio          # Recurring credits / commitments
+  - financial_stress_index              # Balance dips + overdraft frequency
+  - inflow_outflow_ratio                # Total credits / total debits
+  - credit_concentration_index          # HHI of credit sources
+  - months_data_available               # Data richness indicator
+
+# --- SEGMENTATION FEATURES ---
+segmentation_features:
+  - max_credit_3m
+  - avg_credit_12m
+  - cv_monthly_credit_12m
+  - dominant_credit_source_share
+  - business_mcc_credit_share
+  - months_with_salary_pattern
+  - months_with_zero_credit
+  - avg_eom_balance_3m
+  - balance_to_max_credit_ratio
+  - transaction_count_avg_monthly

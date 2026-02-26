@@ -1,0 +1,34 @@
+# Data — never export from GDZ
+data/raw/
+data/processed/
+artifacts/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+.env
+.venv
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Model artifacts (large binaries — store separately)
+*.pkl
+*.model
+*.lgb
