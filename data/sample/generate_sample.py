@@ -38,12 +38,13 @@ from dateutil.relativedelta import relativedelta
 
 # ── Segment mix for scoring population ──────────────────────────────────────
 SEGMENT_MIX = {
-    "PAYROLL":          0.15,
-    "SALARY_LIKE":      0.25,
-    "SME":              0.20,
-    "GIG_FREELANCE":    0.20,
-    "PASSIVE_INVESTOR": 0.10,
+    "PAYROLL":          0.14,
+    "SALARY_LIKE":      0.24,
+    "SME":              0.19,
+    "GIG_FREELANCE":    0.19,
+    "PASSIVE_INVESTOR": 0.09,
     "THIN":             0.10,
+    "SPARSE":           0.05,   # Data-insufficient cases (~5% of real portfolio)
 }
 
 # ── Occupation split for training labels ─────────────────────────────────────
@@ -56,6 +57,7 @@ OCCUPATION_BY_SEGMENT = {
     "GIG_FREELANCE":    "SE",
     "PASSIVE_INVESTOR": "SE",
     "THIN":             "SA",   # Unknown — default to SA
+    "SPARSE":           "SA",   # Unknown — default to SA
 }
 
 # ── Income distributions per segment (THB/month, log-normal params) ──────────
@@ -67,6 +69,7 @@ INCOME_PARAMS = {
     "GIG_FREELANCE":    {"dist": "lognormal", "mu": 10.1, "sigma": 0.65},   # ~24K median
     "PASSIVE_INVESTOR": {"dist": "lognormal", "mu": 10.8, "sigma": 0.70},   # ~49K median
     "THIN":             {"dist": "lognormal", "mu": 10.0, "sigma": 0.55},   # ~22K median
+    "SPARSE":           {"dist": "lognormal", "mu": 10.0, "sigma": 0.60},   # unknown — not used
 }
 
 # Clip to realistic bounds (THB/month)
@@ -238,9 +241,13 @@ class SampleDataGenerator:
         gen = getattr(self, f"_gen_{segment.lower()}")
         params = gen()
 
-        # Determine actual months available (THIN gets fewer)
+        # Determine actual months available (THIN/SPARSE get fewer)
         if segment == "THIN":
             n_active = self.rng.randint(2, 6)
+            active_months = self.month_labels[-n_active:]
+        elif segment == "SPARSE":
+            # SPARSE: 1–3 months max, high probability of zero-credit months
+            n_active = self.rng.randint(1, 4)
             active_months = self.month_labels[-n_active:]
         else:
             # Occasional missing months for realism
@@ -392,6 +399,37 @@ class SampleDataGenerator:
             "initial_balance": base_income * self.rng.uniform(0.1, 1.0),
         }
 
+    def _gen_sparse(self) -> dict:
+        """
+        Generate parameters for a SPARSE customer — data-insufficient case.
+
+        Characteristics that make SPARSE detection feasible:
+          - Extremely low transaction density (≤1.5 avg txn/month)
+          - Very high gap ratio (>60% months with no credit)
+          - Near-dormant account (dormancy_gap_max ≥ months − 1)
+          - Short history (1–2 months) in the most extreme cases
+
+        SPARSE customers differ from THIN:
+          - THIN:   low income but ESTIMABLE (has usable signal)
+          - SPARSE: data so poor that estimation is INFEASIBLE
+        """
+        base_income = self._sample_income("SPARSE", 1)[0]
+        return {
+            "base_credit": base_income * self.rng.uniform(0.1, 0.4),  # Very low credit level
+            "credit_cv": self.rng.uniform(0.60, 1.50),   # Extremely volatile / gappy
+            "debit_ratio": self.rng.uniform(0.40, 0.90),
+            "commitment_ratio": self.rng.uniform(0.05, 0.20),
+            "recurring_ratio": self.rng.uniform(0.05, 0.25),
+            "lifestyle_ratio": self.rng.uniform(0.05, 0.15),
+            "dominant_share": self.rng.uniform(0.50, 1.00),
+            "biz_mcc_share": self.rng.uniform(0.00, 0.05),
+            "has_payroll": False,
+            "investment_freq": 0.0,
+            "tx_count_base": self.rng.randint(1, 2),     # ≤1.5 avg — key SPARSE signal
+            "initial_balance": base_income * self.rng.uniform(0.0, 0.3),
+            "zero_income_months": self.rng.randint(3, 6), # Most months dormant
+        }
+
     # ── Monthly cashflow generator ───────────────────────────────────────────
 
     def _monthly_cashflow(self, params: dict, segment: str, month_idx: int, n_months: int):
@@ -399,12 +437,12 @@ class SampleDataGenerator:
         base = params["base_credit"]
         cv = params["credit_cv"]
 
-        # Zero-income months for GIG
-        if segment == "GIG_FREELANCE":
+        # Zero-income months for GIG and SPARSE
+        if segment in ("GIG_FREELANCE", "SPARSE"):
             zero_months = params.get("zero_income_months", 0)
             zero_prob = zero_months / max(n_months, 1)
             if self.rng.random() < zero_prob:
-                total_credit = self.rng.uniform(0, base * 0.1)  # Near-zero
+                total_credit = self.rng.uniform(0, base * 0.05)  # Near-zero
             else:
                 total_credit = max(0, self.rng.normal(base, base * cv))
         elif segment == "SME":

@@ -100,6 +100,26 @@ class FeatureEngineer:
             self._assign_data_tier
         )
 
+        # ── OQS (Observation Quality Score) ────────────────────────────────
+        # Continuous data-quality signal consumed by all downstream models
+        # (SPARSE classifier, reliability engine, BCI data-richness component).
+        # OQS is a model input, not an eligibility gate.
+        #   oqs = 0.5 × min(months / 6, 1) + 0.5 × min(avg_txn / 10, 1)
+        feat_df["oqs_score"] = (
+            0.5 * (feat_df["months_data_available"] / 6.0).clip(0, 1)
+            + 0.5 * (feat_df["transaction_count_avg_monthly"] / 10.0).clip(0, 1)
+        ).round(4)
+
+        # ── Feature masking count ───────────────────────────────────────────
+        # Number of feature groups masked due to insufficient history.
+        # Deterministic from months_data_available (Feature Validity Matrix):
+        #   G1 credit_3m ≥2M, G2 credit_6m ≥4M, G3 debit_3m ≥2M,
+        #   G4 debit_6m ≥4M, G5 seasonality ≥5M, G6 merchant ≥3M
+        _group_thresholds = [2, 4, 2, 4, 5, 3]
+        feat_df["feature_masking_count"] = feat_df["months_data_available"].apply(
+            lambda m: sum(1 for req in _group_thresholds if m < req)
+        ).astype(int)
+
         # Reset index so customer_id becomes a column (consistent with
         # generate_sample._aggregate_to_customer_features output)
         feat_df = feat_df.reset_index()

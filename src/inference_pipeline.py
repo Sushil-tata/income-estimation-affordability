@@ -6,9 +6,10 @@ aggregate data through to a final credit decision.
 
 Component chain
 ───────────────
-  FeatureEngineer                     → behavioral features per customer
-      ↓                                 INPUT: up to 6 months of monthly aggregates (2–6M),
-                                        eligibility gated by OQS
+  FeatureEngineer                     → behavioral features + oqs_score + feature_masking_count
+      ↓                                 INPUT: up to 6 months of monthly aggregates (2–6M)
+  SparseClassifier                    → SPARSE identification (Layer B)
+      ↓                                 SPARSE → fully-specified REFER record; pipeline exits here
   SegmentationPipeline                → persona assignment (PAYROLL/L0/L1/L2/THIN/PT)
       ↓
   PersonaStabilitySmoother            → suppress persona churn across runs
@@ -67,6 +68,7 @@ import yaml
 
 from income_estimation.features import FeatureEngineer
 from segmentation.pipeline import SegmentationPipeline
+from segmentation.sparse_classifier import SparseClassifier
 from modeling.label_engineering import LabelEngineer
 from modeling.segment_trainer import SegmentModelTrainer
 from modeling.mixture_of_experts import MixtureOfExperts
@@ -193,6 +195,7 @@ class InferencePipeline:
         )
 
         # Components that require fitting
+        self.sparse_classifier:     Optional[SparseClassifier]     = None
         self.segmentation_pipeline: Optional[SegmentationPipeline] = None
         self.label_engineer:        Optional[LabelEngineer]        = None
         self.segment_trainer:       Optional[SegmentModelTrainer]  = None
@@ -226,36 +229,48 @@ class InferencePipeline:
         logger.info("InferencePipeline.fit() — start")
 
         # ── Step 1: Feature engineering ──────────────────────────────────────
-        logger.info("  Step 1/4: FeatureEngineer.build_features()")
+        logger.info("  Step 1/5: FeatureEngineer.build_features()")
         features = self.feature_engineer.build_features(monthly_agg_train)
         features = features.set_index("customer_id") if "customer_id" in features.columns else features
         logger.info(f"  Features: {features.shape[0]:,} customers × {features.shape[1]} features")
 
+        # ── Step 1.5: SPARSE classifier ───────────────────────────────────────
+        logger.info("  Step 1.5/5: SparseClassifier.fit()")
+        self.sparse_classifier = SparseClassifier.from_config(self._cfg)
+        self.sparse_classifier.fit(features)   # Bootstrap proxy labels; no verified y needed
+        sparse_train = self.sparse_classifier.predict_full(features)
+        non_sparse_mask = ~sparse_train["is_sparse"]
+        features_ns = features[non_sparse_mask]
+        logger.info(
+            f"  SPARSE train: {int(sparse_train['is_sparse'].sum()):,} removed → "
+            f"{len(features_ns):,} customers proceed to segmentation"
+        )
+
         # ── Step 2: Segmentation pipeline ────────────────────────────────────
-        logger.info("  Step 2/4: SegmentationPipeline.fit()")
+        logger.info("  Step 2/5: SegmentationPipeline.fit()")
         self.segmentation_pipeline = SegmentationPipeline(
             config_path=self.config_path,
             moe_confidence_threshold=self.moe_confidence_threshold,
         )
-        self.segmentation_pipeline.fit(features)
-        seg_result = self.segmentation_pipeline.run(features)
+        self.segmentation_pipeline.fit(features_ns)
+        seg_result = self.segmentation_pipeline.run(features_ns)
         logger.info(f"  Persona distribution (train):\n{seg_result['persona'].value_counts()}")
 
         # ── Step 3: Label engineer ────────────────────────────────────────────
-        logger.info("  Step 3/4: LabelEngineer.fit()")
-        # Align verified income with feature index
-        common_idx = features.index.intersection(y_verified_income.index)
-        if len(common_idx) < len(features):
+        logger.info("  Step 3/5: LabelEngineer.fit()")
+        # Align verified income with non-SPARSE feature index
+        common_idx = features_ns.index.intersection(y_verified_income.index)
+        if len(common_idx) < len(features_ns):
             logger.warning(
-                f"  y_verified_income covers {len(common_idx):,}/{len(features):,} "
-                f"training customers — fitting label engineer on the intersection."
+                f"  y_verified_income covers {len(common_idx):,}/{len(features_ns):,} "
+                f"non-SPARSE training customers — fitting label engineer on the intersection."
             )
         y_labeled = y_verified_income.loc[common_idx]
 
         # Join features into X so LabelEngineer can access feature columns
         # (e.g., median_credit_6m, retention_ratio_6m for L1 retained inflow proxy).
         X_labeled = seg_result.loc[common_idx].join(
-            features.loc[common_idx], how="left", rsuffix="_feat"
+            features_ns.loc[common_idx], how="left", rsuffix="_feat"
         )
 
         self.label_engineer = LabelEngineer(
@@ -265,7 +280,7 @@ class InferencePipeline:
         self.label_engineer.fit(X_labeled, y_labeled, segment_col="persona")
 
         # ── Step 4: Segment model trainer ─────────────────────────────────────
-        logger.info("  Step 4/4: SegmentModelTrainer.fit()")
+        logger.info("  Step 4/5: SegmentModelTrainer.fit()")
         smt_cfg = self._cfg.get("advanced_modeling", {}).get("segment_trainer", {})
         self.segment_trainer = SegmentModelTrainer(
             label_engineer=self.label_engineer,
@@ -277,7 +292,7 @@ class InferencePipeline:
             random_state=smt_cfg.get("random_state", 42),
         )
         self.segment_trainer.fit(
-            seg_result.join(features, how="left", rsuffix="_feat"),
+            seg_result.join(features_ns, how="left", rsuffix="_feat"),
             y_labeled,
         )
 
@@ -332,8 +347,19 @@ class InferencePipeline:
             features = features.set_index("customer_id")
         logger.info(f"  Features: {features.shape[0]:,} × {features.shape[1]}")
 
+        # ── 1.5. SPARSE identification ─────────────────────────────────────────
+        # SPARSE customers exit here with a fully-specified REFER output record.
+        # Non-SPARSE customers proceed through the remaining pipeline.
+        sparse_result = self.sparse_classifier.predict_full(features)
+        sparse_mask   = sparse_result["is_sparse"]
+        features_ns   = features[~sparse_mask]   # ns = non-sparse
+        logger.info(
+            f"  SPARSE: {int(sparse_mask.sum()):,}/{len(features):,} "
+            f"→ REFER  |  {len(features_ns):,} proceed"
+        )
+
         # ── 2. Segmentation ───────────────────────────────────────────────────
-        seg_result = self.segmentation_pipeline.run(features)
+        seg_result = self.segmentation_pipeline.run(features_ns)
 
         # ── 3. Persona stability smoothing ────────────────────────────────────
         # Only smooth customers with L0/L1/L2 — PAYROLL/THIN bypass.
@@ -359,25 +385,19 @@ class InferencePipeline:
                         f"({n_switched / ml_mask.sum():.1%} of ML customers)")
 
         # ── 4. Income estimation ──────────────────────────────────────────────
-        # Build the full feature + segmentation DataFrame the trainer expects.
-        scorer_df = seg_result.join(features, how="left", rsuffix="_feat")
-
-        income_meta = self.moe_blender.predict(features, seg_result)
+        income_meta = self.moe_blender.predict(features_ns, seg_result)
         income_meta = income_meta.rename("income_estimate")
 
-        # Assemble income_result DataFrame for BCI + PolicyEngine
         income_result = self._build_income_result(
             income_estimate=income_meta,
             seg_result=seg_result,
-            features=features,
+            features=features_ns,
             payroll_income_col=payroll_income_col,
         )
 
         # ── 5. BCI scoring ────────────────────────────────────────────────────
-        # BCI drives decisioning and DSCR cap — income is NOT haircut here.
-        # adjusted_income = income_estimate (PolicyIncome), set in BCIScorer.
-        bci_df = seg_result.join(features[
-            [c for c in features.columns if c not in seg_result.columns]
+        bci_df = seg_result.join(features_ns[
+            [c for c in features_ns.columns if c not in seg_result.columns]
         ], how="left")
         bci_result = self.bci_scorer.compute(
             features=bci_df,
@@ -388,22 +408,31 @@ class InferencePipeline:
         # ── 6. Affordability ──────────────────────────────────────────────────
         affordability_result = self.affordability_engine.compute(
             bci_results=bci_result,
-            features=features,
-            persona_col="segment",   # bci_result has "segment" column (=persona)
+            features=features_ns,
+            persona_col="segment",
         )
 
         # ── 7. Policy decision ────────────────────────────────────────────────
         policy_result = self.policy_engine.decide(bci_result, affordability_result)
 
-        # ── 8. Consolidated output ────────────────────────────────────────────
-        final_output = self._build_final_output(
-            features=features,
+        # ── 8. Consolidated output (non-SPARSE) ───────────────────────────────
+        final_ns = self._build_final_output(
+            features=features_ns,
             seg_result=seg_result,
             income_result=income_result,
             bci_result=bci_result,
             affordability_result=affordability_result,
             policy_result=policy_result,
         )
+
+        # ── 8.5. SPARSE records — fully-specified per architecture spec ────────
+        final_sparse = self._build_sparse_output(
+            features=features,
+            sparse_result=sparse_result,
+        )
+
+        # Merge: SPARSE rows first, then non-SPARSE, preserving original order
+        final_output = pd.concat([final_sparse, final_ns], axis=0).reindex(features.index)
 
         # ── 9. Build run state for next month ─────────────────────────────────
         run_state: Dict[str, Any] = {
@@ -415,7 +444,7 @@ class InferencePipeline:
         logger.info(
             f"InferencePipeline.run() complete — "
             f"{len(final_output):,} customers  "
-            f"decisions: {policy_result['final_decision'].value_counts().to_dict()}"
+            f"decisions: {final_output['final_decision'].value_counts().to_dict()}"
         )
 
         return InferencePipelineResult(
@@ -444,6 +473,53 @@ class InferencePipeline:
             return pickle.load(f)
 
     # ── Private helpers ───────────────────────────────────────────────────────
+
+    def _build_sparse_output(
+        self,
+        features: pd.DataFrame,
+        sparse_result: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Build fully-specified output records for SPARSE customers.
+
+        Per v5.0 architecture spec (Layer B), every SPARSE customer receives a
+        complete output record with no undefined fields. These customers route
+        directly to REFER — no income, no BCI, no affordability computed.
+
+        Provisional flags: P-03 (SPARSE classifier bootstrap), P-10 (decision thresholds).
+        """
+        sparse_idx = sparse_result.index[sparse_result["is_sparse"]]
+        if len(sparse_idx) == 0:
+            return pd.DataFrame()
+
+        sr = sparse_result.loc[sparse_idx]
+        out = pd.DataFrame(index=sparse_idx)
+
+        out["persona"]              = "SPARSE"
+        out["persona_confidence"]   = sr["p_sparse"]    # confidence in SPARSE assignment
+        out["income_source"]        = "SPARSE_CLASSIFIER"
+        out["income_estimate_raw"]  = np.nan
+        out["income_q25"]           = np.nan
+        out["income_q75"]           = np.nan
+        out["income_interval_width"] = np.nan
+        out["oqs_score"]            = sr["oqs_score"]
+        out["feature_masking_count"] = sr["feature_masking_count"]
+        out["sparse_reason_code"]   = sr["sparse_reason_code"]
+        out["bci_score"]            = np.nan
+        out["bci_band"]             = "VERY_LOW"
+        out["income_haircut"]       = 1.0              # no haircut ever applied
+        out["adjusted_income"]      = np.nan
+        out["existing_obligations"] = np.nan
+        out["allowable_obligation"] = np.nan
+        out["adsc"]                 = np.nan
+        out["dscr_used"]            = np.nan
+        out["dscr_actual"]          = np.nan
+        out["is_affordable"]        = False
+        out["final_decision"]       = "REFER"
+        out["decision_reason"]      = "SPARSE_INSUFFICIENT_DATA"
+        out["provisional_flags"]    = [["P-03", "P-10"]] * len(sparse_idx)
+
+        return out
 
     def _build_income_result(
         self,

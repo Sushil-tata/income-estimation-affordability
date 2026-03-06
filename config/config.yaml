@@ -257,6 +257,23 @@ label_engineering:
     GIG_FREELANCE:    0.25
     PASSIVE_INVESTOR: 0.40
 
+# --- SPARSE Data-Sufficiency Classifier [Provisional item P-03] ---
+# Identifies customers for whom reliable income estimation is infeasible.
+# sparse_threshold is an implementation parameter — not an architectural constant.
+# Retrain with verified outcome labels (verification failures, VH-band error cases)
+# after the 6-month vintage to replace bootstrap proxy labels.
+sparse_classifier:
+  sparse_threshold: 0.50          # P(SPARSE) >= this → SPARSE routing [PROVISIONAL]
+  n_estimators: 200
+  learning_rate: 0.05
+  max_depth: 4
+  num_leaves: 15
+  min_child_samples: 20
+  calibration_method: "isotonic"  # isotonic (N>1000) or sigmoid (small N)
+  oqs_depth_weight: 0.50          # Weight for months-depth in OQS
+  oqs_density_weight: 0.50        # Weight for transaction-density in OQS
+  random_state: 42
+
 # --- Data Paths (relative to project root, actual data stays in GDZ) ---
 paths:
   raw_data: "data/raw/"
