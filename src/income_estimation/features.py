@@ -81,6 +81,13 @@ class FeatureEngineer:
         # ── SEGMENTATION SIGNALS ───────────────────────────────────────────
         features.update(self._segmentation_signals(grouped))
 
+        # ── PHASE 1: Extended feature groups ───────────────────────────────
+        features.update(self._recurring_structure_features(grouped))
+        features.update(self._volatility_features(grouped))
+        features.update(self._seasonality_features(grouped))
+        features.update(self._short_window_features(grouped))
+        features.update(self._regularity_features(grouped))
+
         # ── DERIVED / COMPOSITE ────────────────────────────────────────────
         feat_df = pd.DataFrame(features)
         feat_df = self._derived_features(feat_df)
@@ -92,6 +99,10 @@ class FeatureEngineer:
         feat_df["data_tier"] = feat_df["months_data_available"].apply(
             self._assign_data_tier
         )
+
+        # Reset index so customer_id becomes a column (consistent with
+        # generate_sample._aggregate_to_customer_features output)
+        feat_df = feat_df.reset_index()
 
         logger.info(f"Feature matrix: {feat_df.shape[0]:,} customers × {feat_df.shape[1]} features")
         tier_counts = feat_df["data_tier"].value_counts().to_dict()
@@ -207,6 +218,18 @@ class FeatureEngineer:
         # Transaction density
         f["transaction_count_avg_monthly"] = grouped["transaction_count"].mean()
 
+        # Phase 1 extensions
+        f["min_balance_to_mean_ratio"] = grouped["eom_balance"].apply(
+            lambda x: x.min() / x.mean() if x.mean() > 0 else 0.0
+        ).fillna(0.0)
+        f["months_negative_balance"] = grouped["eom_balance"].apply(
+            lambda x: (x < 0).sum()
+        )
+        f["balance_volatility_6m"] = grouped["eom_balance"].apply(
+            lambda x: (x.iloc[-6:].std() / abs(x.iloc[-6:].mean()))
+            if len(x) >= 6 and x.iloc[-6:].mean() != 0 else np.nan
+        ).fillna(1.0)
+
         return f
 
     def _segmentation_signals(self, grouped) -> dict:
@@ -237,7 +260,202 @@ class FeatureEngineer:
         df["financial_stress_index"] = (
             df["months_below_1000_balance"] / df["months_data_available"].replace(0, np.nan)
         ).fillna(0.0)
+
+        # ── Phase 1: Balance extended ────────────────────────────────────
+        df["liquidity_buffer_ratio"] = (
+            df["avg_eom_balance_6m"] / df["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        # ── Phase 1: 6-month credit-expense derived ───────────────────────
+        df["retention_ratio_6m"] = (
+            (df["avg_monthly_credit_6m"] - df["avg_monthly_debit_6m"])
+            / df["avg_monthly_credit_6m"].replace(0, np.nan)
+        ).fillna(0.0).clip(-1, 1)
+
+        # 3-month retention ratio — used alongside 6M for PT income robustness.
+        # min(retention_ratio_6m, retention_ratio_3m) ensures the more
+        # conservative window governs the PT usable income estimate.
+        df["retention_ratio_3m"] = (
+            (df["median_credit_3m"] - df["avg_monthly_debit_3m"])
+            / df["median_credit_3m"].replace(0, np.nan)
+        ).fillna(0.0).clip(-1, 1)
+
+        df["pass_through_score"] = (1 - df["retention_ratio_6m"]).clip(0, 1)
+
+        df["end_balance_ratio_6m"] = (
+            df["avg_eom_balance_6m"] / df["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        df["recurring_debit_share"] = (
+            (df["avg_commitment_amount_12m"] + df["avg_recurring_expense_12m"])
+            / df["avg_total_debit_12m"].replace(0, np.nan)
+        ).fillna(0.0).clip(0, 1)
+
+        df["usable_income_proxy"] = (
+            df["avg_monthly_credit_12m"]
+            * df["recurring_to_total_credit_ratio"].clip(0, 1)
+            * (1 - df["recurring_debit_share"])
+        )
+
+        df["churn_intensity"] = (
+            (df["avg_monthly_credit_6m"] - df["avg_monthly_debit_6m"]).clip(lower=0)
+            / df["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        df["inflow_outflow_velocity"] = (
+            (df["avg_monthly_credit_6m"] - df["avg_monthly_debit_6m"])
+            / df["avg_monthly_credit_6m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        df["debit_credit_ratio_6m"] = (
+            df["median_debit_6m"] / df["median_credit_6m"].replace(0, np.nan)
+        ).fillna(1.0)
+
+        # ── Phase 1: L0 regularity ────────────────────────────────────────
+        df["regularity_score"] = (1 - df["cv_monthly_credit_12m"]).clip(0, 1)
+
         return df
+
+    # ── PHASE 1: New feature group methods ─────────────────────────────────
+
+    def _recurring_structure_features(self, grouped) -> dict:
+        """Recurring income stream structure — 5 features + 2 6m helper columns."""
+        f = {}
+        f["median_recurring_credit_12m"] = grouped["recurring_credit_amount"].median()
+
+        f["recurring_stream_survival_ratio"] = grouped["recurring_credit_amount"].apply(
+            lambda x: (x > x.median() * 0.5).mean() if x.median() > 0 else 0.0
+        )
+
+        f["recurring_credit_deviation_mom"] = grouped["recurring_credit_amount"].apply(
+            lambda x: x.diff().abs().median() / x.median()
+            if len(x) > 1 and x.median() > 0 else np.nan
+        ).fillna(1.0)
+
+        # Fraction of months where recurring credit is within 10% of its own median
+        # — approximation of fixed-period payroll periodicity
+        f["salary_periodicity_confidence"] = grouped["recurring_credit_amount"].apply(
+            lambda x: (np.abs(x - x.median()) <= x.median() * 0.10).mean()
+            if x.median() > 0 else 0.0
+        )
+
+        f["active_month_ratio_12m"] = grouped["total_credit_amount"].apply(
+            lambda x: (x > 0).mean()
+        )
+
+        # 6-month window helpers used by multiple derived features
+        f["avg_monthly_credit_6m"] = grouped["total_credit_amount"].apply(
+            lambda x: x.iloc[-6:].mean() if len(x) >= 6 else x.mean()
+        )
+        f["avg_monthly_debit_6m"] = grouped["total_debit_amount"].apply(
+            lambda x: x.iloc[-6:].mean() if len(x) >= 6 else x.mean()
+        )
+        return f
+
+    def _volatility_features(self, grouped) -> dict:
+        """Income volatility shape features — 6 features."""
+        f = {}
+        f["credit_skewness_12m"] = grouped["total_credit_amount"].apply(
+            lambda x: float(x.skew()) if len(x) >= 4 else 0.0
+        ).fillna(0.0)
+
+        f["credit_kurtosis_12m"] = grouped["total_credit_amount"].apply(
+            lambda x: float(x.kurt()) if len(x) >= 4 else 0.0
+        ).fillna(0.0)
+
+        f["credit_p95_p50_ratio"] = grouped["total_credit_amount"].apply(
+            lambda x: np.percentile(x, 95) / np.median(x) if np.median(x) > 0 else 1.0
+        ).fillna(1.0)
+
+        # Fraction of months where credit exceeds 2× its own median
+        f["credit_spike_ratio"] = grouped["total_credit_amount"].apply(
+            lambda x: (x > x.median() * 2).mean() if x.median() > 0 else 0.0
+        )
+
+        f["mom_growth_volatility"] = grouped["total_credit_amount"].apply(
+            lambda x: x.pct_change().dropna().std() if len(x) > 2 else np.nan
+        ).fillna(1.0).clip(0, 5)
+
+        # Worst single-month credit drop (as pct of prior month) in last 6m
+        f["max_month_drop_6m"] = grouped["total_credit_amount"].apply(
+            lambda x: (-(x.iloc[-6:].pct_change().dropna())).clip(lower=0).max()
+            if len(x) >= 3 else 0.0
+        ).fillna(0.0)
+        return f
+
+    def _seasonality_features(self, grouped) -> dict:
+        """Credit seasonality and temporal concentration — 5 features."""
+        f = {}
+        # Max/min ratio of positive months — captures seasonal business swings
+        f["seasonality_index"] = grouped["total_credit_amount"].apply(
+            lambda x: x.max() / x[x > 0].min()
+            if (x > 0).any() and x[x > 0].min() > 0 else 1.0
+        ).fillna(1.0).clip(1, 20)
+
+        f["peak_trough_ratio"] = grouped["total_credit_amount"].apply(
+            lambda x: x.max() / x.median() if x.median() > 0 else 1.0
+        ).fillna(1.0)
+
+        # Temporal income concentration: fraction of annual total in top months
+        f["top2_month_inflow_share"] = grouped["total_credit_amount"].apply(
+            lambda x: x.nlargest(2).sum() / x.sum() if x.sum() > 0 else np.nan
+        ).fillna(1.0)
+
+        f["top3_month_inflow_share"] = grouped["total_credit_amount"].apply(
+            lambda x: x.nlargest(3).sum() / x.sum() if x.sum() > 0 else np.nan
+        ).fillna(1.0)
+
+        # Recent 3m vs full 12m — detects ramp-up or income deterioration
+        f["rolling_3m_vs_12m_ratio"] = grouped["total_credit_amount"].apply(
+            lambda x: x.iloc[-3:].median() / x.median()
+            if len(x) >= 3 and x.median() > 0 else 1.0
+        ).fillna(1.0)
+        return f
+
+    def _short_window_features(self, grouped) -> dict:
+        """Short-window (3m / 6m) credit and debit statistics — 5 features."""
+        f = {}
+        f["median_credit_3m"] = grouped["total_credit_amount"].apply(
+            lambda x: x.iloc[-3:].median() if len(x) >= 3 else x.median()
+        )
+        f["median_credit_6m"] = grouped["total_credit_amount"].apply(
+            lambda x: x.iloc[-6:].median() if len(x) >= 6 else x.median()
+        )
+        f["credit_cv_6m"] = grouped["total_credit_amount"].apply(
+            lambda x: x.iloc[-6:].std() / x.iloc[-6:].mean()
+            if len(x) >= 6 and x.iloc[-6:].mean() > 0 else np.nan
+        ).fillna(1.0)
+        f["credit_std_6m"] = grouped["total_credit_amount"].apply(
+            lambda x: x.iloc[-6:].std() if len(x) >= 6 else x.std()
+        ).fillna(0.0)
+        f["median_debit_6m"] = grouped["total_debit_amount"].apply(
+            lambda x: x.iloc[-6:].median() if len(x) >= 6 else x.median()
+        )
+        f["avg_monthly_debit_3m"] = grouped["total_debit_amount"].apply(
+            lambda x: x.iloc[-3:].mean() if len(x) >= 3 else x.mean()
+        )
+        f["avg_recurring_credit_6m"] = grouped["recurring_credit_amount"].apply(
+            lambda x: x.iloc[-6:].mean() if len(x) >= 6 else x.mean()
+        )
+        return f
+
+    def _regularity_features(self, grouped) -> dict:
+        """Temporal regularity of income stream — 3 features."""
+        f = {}
+        # Fraction of months where total credit is within 10% of its median
+        # (fixed-income proxy, distinct from salary_periodicity_confidence
+        #  which uses recurring_credit_amount)
+        f["fixed_amount_similarity"] = grouped["total_credit_amount"].apply(
+            lambda x: (np.abs(x - x.median()) <= x.median() * 0.10).mean()
+            if x.median() > 0 else 0.0
+        )
+        f["income_slope_6m"] = grouped["total_credit_amount"].apply(
+            lambda x: self._linear_slope(x.iloc[-6:]) if len(x) >= 3 else 0.0
+        )
+        f["dormancy_gap_max"] = grouped["total_credit_amount"].apply(
+            lambda x: self._max_gap_months(x)
+        )
+        return f
 
     @staticmethod
     def _assign_data_tier(months: int) -> str:
@@ -285,3 +503,15 @@ class FeatureEngineer:
         except Exception:
             slope = 0.0
         return slope
+
+    @staticmethod
+    def _max_gap_months(series: pd.Series) -> int:
+        """Max consecutive months with zero/near-zero credit (dormancy gap)."""
+        max_gap = gap = 0
+        for v in series:
+            if v <= 0:
+                gap += 1
+                max_gap = max(max_gap, gap)
+            else:
+                gap = 0
+        return max_gap

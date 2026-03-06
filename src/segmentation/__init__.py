@@ -1,5 +1,12 @@
 from .pipeline import SegmentationPipeline
 from .rules import RuleBasedSegmenter
-from .clustering import BehavioralClusterer
+from .clustering import PersonaClusterer, BehavioralClusterer  # BehavioralClusterer deprecated
+from .router import PersonaRouter
 
-__all__ = ["SegmentationPipeline", "RuleBasedSegmenter", "BehavioralClusterer"]
+__all__ = [
+    "SegmentationPipeline",
+    "RuleBasedSegmenter",
+    "PersonaClusterer",
+    "PersonaRouter",
+    "BehavioralClusterer",   # backward compat
+]

@@ -590,6 +590,158 @@ class SampleDataGenerator:
             feat["months_below_1000_balance"] / feat["months_data_available"].replace(0, 1)
         )
 
+        # ── Phase 1: Recurring structure ──────────────────────────────────────
+        feat["median_recurring_credit_12m"] = g["recurring_credit_amount"].median()
+
+        feat["recurring_stream_survival_ratio"] = g["recurring_credit_amount"].apply(
+            lambda x: (x > x.median() * 0.5).mean() if x.median() > 0 else 0.0
+        )
+        feat["recurring_credit_deviation_mom"] = g["recurring_credit_amount"].apply(
+            lambda x: x.diff().abs().median() / x.median()
+            if len(x) > 1 and x.median() > 0 else 1.0
+        ).fillna(1.0)
+        feat["salary_periodicity_confidence"] = g["recurring_credit_amount"].apply(
+            lambda x: (np.abs(x - x.median()) <= x.median() * 0.10).mean()
+            if x.median() > 0 else 0.0
+        )
+        feat["active_month_ratio_12m"] = g["total_credit_amount"].apply(
+            lambda x: (x > 0).mean()
+        )
+        feat["avg_monthly_credit_6m"] = g["total_credit_amount"].apply(
+            lambda x: x.sort_index().iloc[-6:].mean() if len(x) >= 6 else x.mean()
+        )
+        feat["avg_monthly_debit_6m"] = g["total_debit_amount"].apply(
+            lambda x: x.sort_index().iloc[-6:].mean() if len(x) >= 6 else x.mean()
+        )
+
+        # ── Phase 1: Volatility ───────────────────────────────────────────────
+        feat["credit_skewness_12m"] = g["total_credit_amount"].apply(
+            lambda x: float(x.skew()) if len(x) >= 4 else 0.0
+        ).fillna(0.0)
+        feat["credit_kurtosis_12m"] = g["total_credit_amount"].apply(
+            lambda x: float(x.kurt()) if len(x) >= 4 else 0.0
+        ).fillna(0.0)
+        feat["credit_p95_p50_ratio"] = g["total_credit_amount"].apply(
+            lambda x: np.percentile(x, 95) / np.median(x) if np.median(x) > 0 else 1.0
+        ).fillna(1.0)
+        feat["credit_spike_ratio"] = g["total_credit_amount"].apply(
+            lambda x: (x > x.median() * 2).mean() if x.median() > 0 else 0.0
+        )
+        feat["mom_growth_volatility"] = g["total_credit_amount"].apply(
+            lambda x: x.pct_change().dropna().std() if len(x) > 2 else 1.0
+        ).fillna(1.0).clip(0, 5)
+        feat["max_month_drop_6m"] = g["total_credit_amount"].apply(
+            lambda x: (-(x.sort_index().iloc[-6:].pct_change().dropna())).clip(lower=0).max()
+            if len(x) >= 3 else 0.0
+        ).fillna(0.0)
+
+        # ── Phase 1: Seasonality ──────────────────────────────────────────────
+        feat["seasonality_index"] = g["total_credit_amount"].apply(
+            lambda x: x.max() / x[x > 0].min()
+            if (x > 0).any() and x[x > 0].min() > 0 else 1.0
+        ).fillna(1.0).clip(1, 20)
+        feat["peak_trough_ratio"] = g["total_credit_amount"].apply(
+            lambda x: x.max() / x.median() if x.median() > 0 else 1.0
+        ).fillna(1.0)
+        feat["top2_month_inflow_share"] = g["total_credit_amount"].apply(
+            lambda x: x.nlargest(2).sum() / x.sum() if x.sum() > 0 else 1.0
+        ).fillna(1.0)
+        feat["top3_month_inflow_share"] = g["total_credit_amount"].apply(
+            lambda x: x.nlargest(3).sum() / x.sum() if x.sum() > 0 else 1.0
+        ).fillna(1.0)
+        feat["rolling_3m_vs_12m_ratio"] = g["total_credit_amount"].apply(
+            lambda x: x.sort_index().iloc[-3:].median() / x.median()
+            if len(x) >= 3 and x.median() > 0 else 1.0
+        ).fillna(1.0)
+
+        # ── Phase 1: Short-window ─────────────────────────────────────────────
+        feat["median_credit_3m"] = g["total_credit_amount"].apply(
+            lambda x: x.sort_index().iloc[-3:].median() if len(x) >= 3 else x.median()
+        )
+        feat["median_credit_6m"] = g["total_credit_amount"].apply(
+            lambda x: x.sort_index().iloc[-6:].median() if len(x) >= 6 else x.median()
+        )
+        feat["credit_cv_6m"] = g["total_credit_amount"].apply(
+            lambda x: x.sort_index().iloc[-6:].std() / x.sort_index().iloc[-6:].mean()
+            if len(x) >= 6 and x.sort_index().iloc[-6:].mean() > 0 else 1.0
+        ).fillna(1.0)
+        feat["credit_std_6m"] = g["total_credit_amount"].apply(
+            lambda x: x.sort_index().iloc[-6:].std() if len(x) >= 6 else x.std()
+        ).fillna(0.0)
+        feat["median_debit_6m"] = g["total_debit_amount"].apply(
+            lambda x: x.sort_index().iloc[-6:].median() if len(x) >= 6 else x.median()
+        )
+
+        # ── Phase 1: Regularity ───────────────────────────────────────────────
+        feat["fixed_amount_similarity"] = g["total_credit_amount"].apply(
+            lambda x: (np.abs(x - x.median()) <= x.median() * 0.10).mean()
+            if x.median() > 0 else 0.0
+        )
+        feat["income_slope_6m"] = g["total_credit_amount"].apply(
+            lambda x: _linear_slope(x.sort_index().iloc[-6:].values) if len(x) >= 3 else 0.0
+        )
+        feat["dormancy_gap_max"] = g["total_credit_amount"].apply(
+            lambda x: _max_gap_months(x.values)
+        )
+
+        # ── Phase 1: Balance extended ─────────────────────────────────────────
+        feat["min_balance_to_mean_ratio"] = g["eom_balance"].apply(
+            lambda x: x.min() / x.mean() if x.mean() > 0 else 0.0
+        ).fillna(0.0)
+        feat["months_negative_balance"] = g["eom_balance"].apply(
+            lambda x: (x < 0).sum()
+        )
+        feat["balance_volatility_6m"] = g["eom_balance"].apply(
+            lambda x: (x.sort_index().iloc[-6:].std() / abs(x.sort_index().iloc[-6:].mean()))
+            if len(x) >= 6 and x.sort_index().iloc[-6:].mean() != 0 else 1.0
+        ).fillna(1.0)
+
+        # ── Phase 1: Derived extensions ───────────────────────────────────────
+        feat["liquidity_buffer_ratio"] = (
+            feat["avg_eom_balance_6m"] / feat["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        feat["retention_ratio_6m"] = (
+            (feat["avg_monthly_credit_6m"] - feat["avg_monthly_debit_6m"])
+            / feat["avg_monthly_credit_6m"].replace(0, np.nan)
+        ).fillna(0.0).clip(-1, 1)
+
+        feat["pass_through_score"] = (1 - feat["retention_ratio_6m"]).clip(0, 1)
+
+        feat["end_balance_ratio_6m"] = (
+            feat["avg_eom_balance_6m"] / feat["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        feat["recurring_debit_share"] = (
+            (feat["avg_commitment_amount_12m"] + feat["avg_recurring_expense_12m"])
+            / feat["avg_total_debit_12m"].replace(0, np.nan)
+        ).fillna(0.0).clip(0, 1)
+
+        feat["usable_income_proxy"] = (
+            feat["avg_monthly_credit_12m"]
+            * feat["recurring_to_total_credit_ratio"].clip(0, 1)
+            * (1 - feat["recurring_debit_share"])
+        )
+
+        feat["churn_intensity"] = (
+            (feat["avg_monthly_credit_6m"] - feat["avg_monthly_debit_6m"]).clip(lower=0)
+            / feat["avg_monthly_credit_12m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        feat["inflow_outflow_velocity"] = (
+            (feat["avg_monthly_credit_6m"] - feat["avg_monthly_debit_6m"])
+            / feat["avg_monthly_credit_6m"].replace(0, np.nan)
+        ).fillna(0.0)
+
+        feat["debit_credit_ratio_6m"] = (
+            feat["median_debit_6m"] / feat["median_credit_6m"].replace(0, np.nan)
+        ).fillna(1.0)
+
+        feat["regularity_score"] = (1 - feat["cv_monthly_credit_12m"]).clip(0, 1)
+
+        # ── Data tier ─────────────────────────────────────────────────────────
+        feat["data_tier"] = feat["months_data_available"].apply(_assign_data_tier)
+
         return feat.reset_index()
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -684,6 +836,29 @@ def _linear_slope(arr: np.ndarray) -> float:
         return float(np.polyfit(x, arr, 1)[0])
     except Exception:
         return 0.0
+
+
+def _max_gap_months(arr: np.ndarray) -> int:
+    """Max consecutive months with zero/near-zero credit (dormancy gap)."""
+    max_gap = gap = 0
+    for v in arr:
+        if v <= 0:
+            gap += 1
+            max_gap = max(max_gap, gap)
+        else:
+            gap = 0
+    return max_gap
+
+
+def _assign_data_tier(months: int) -> str:
+    """Map months of history to data confidence tier label."""
+    if months >= 12:
+        return "12M"
+    elif months >= 9:
+        return "9M"
+    elif months >= 6:
+        return "6M"
+    return "THIN"
 
 
 # ── Convenience functions (used in notebooks) ────────────────────────────────

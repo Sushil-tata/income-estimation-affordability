@@ -65,21 +65,28 @@ class BCIComponents:
         months_data_available: pd.Series,
     ) -> pd.Series:
         """
-        Measures how cleanly a customer fits their assigned segment.
+        Measures how cleanly a customer fits their assigned persona/segment.
 
-        PAYROLL / SALARY_LIKE → high clarity.
-        SME, GIG, THIN → lower clarity reflecting income ambiguity.
+        PAYROLL → highest clarity (payroll verified).
+        L0 (stable structured) → high clarity.
+        L1 (structured irregular) → medium clarity.
+        L2 (volatile/informal) → lower clarity.
+        THIN → very low clarity (insufficient data).
         """
-        base_clarity = pd.Series(0.0, index=segment.index)
-
-        # Segment base confidence
+        # Persona base confidence
+        # Phase 2+ labels take priority; legacy labels kept for backward compat.
         segment_base = {
+            # Phase 2+ persona labels
             "PAYROLL": 1.00,
-            "SALARY_LIKE": 0.85,
-            "SME": 0.60,
-            "GIG_FREELANCE": 0.50,
+            "L0":      0.85,   # Stable structured — income pattern is clear
+            "L1":      0.65,   # Structured irregular — moderate confidence
+            "L2":      0.45,   # Volatile/informal — lower confidence
+            "THIN":    0.20,   # Thin file — very little signal
+            # Legacy segment labels (backward compatibility)
+            "SALARY_LIKE":      0.85,
+            "SME":              0.60,
+            "GIG_FREELANCE":    0.50,
             "PASSIVE_INVESTOR": 0.65,
-            "THIN": 0.20,
         }
         base_clarity = segment.map(segment_base).fillna(0.50)
 

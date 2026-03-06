@@ -15,8 +15,9 @@ bot_norms:
     PAYROLL: 0.40
     L0:      0.40
     L1:      0.38
-    L2:      0.45
+    L2:      0.45   # relaxed: income estimate is already P30 retained inflow anchor
     THIN:    0.35
+    PT:      0.35   # pass-through: formula-based income, moderate conservatism
     # Legacy segment names (backward compatibility during persona transition)
     SALARY_LIKE:      0.40
     SME:              0.38
@@ -45,23 +46,33 @@ bci:
     high:
       min: 80
       max: 100
-      haircut: 1.00       # Use income at face value
+      haircut: 1.00       # Retained for audit/explainability only — NOT applied to income
       policy: "STP"
     medium:
       min: 60
       max: 79
-      haircut: 0.80       # 80% of estimated income
+      haircut: 0.80       # Retained for audit only
       policy: "STP"
     low:
       min: 40
       max: 59
-      haircut: 0.60       # 60% of estimated income
+      haircut: 0.60       # Retained for audit only
       policy: "MANUAL_REVIEW"
     very_low:
       min: 0
       max: 39
       haircut: 0.00
       policy: "DECLINE_OR_REFER"
+
+  # BCI band DSCR caps — replace income haircut as the behavioural risk gate.
+  # AdjustedIncome = PolicyIncome (no haircut).
+  # DSCR_used = min(persona_dscr_cap, bci_band_dscr_cap)
+  band_dscr_caps:
+    HIGH:     0.45   # Strong behaviour → can commit larger share of income to debt
+    MEDIUM:   0.40   # Normal threshold
+    LOW:      0.35   # Uncertain — tighten DSCR, refer for income review
+    VERY_LOW: 0.30   # Hard decline likely; cap retained for edge-case refer
+
   segment_bci_caps:
     # New persona labels (Phase 2+)
     PAYROLL: 100
@@ -69,6 +80,7 @@ bci:
     L1:      75
     L2:      60
     THIN:    30
+    PT:      50    # Pass-through: formula-based income, moderate confidence ceiling
     # Legacy segment labels (backward compatibility during transition)
     SALARY_LIKE:      90
     SME:              70
@@ -87,16 +99,18 @@ segmentation:
 
 # --- Feature Engineering ---
 features:
-  lookback_months: 12                  # Minimum history window
+  lookback_months: 6                   # Primary window; 2–6M accepted via OQS gate
   monthly_aggregate: true              # Use monthly aggregates only
-  min_active_months: 3                 # Min months with any activity
+  min_active_months: 2                 # OQS gate is the eligibility mechanism
 
   # Data window tiers — determines confidence level and BCI data_richness cap
+  # INPUT: Up to 6 months of monthly aggregates (2–6M), with OQS-based eligibility.
   data_tiers:
     tier_12m_min_months: 12            # Full feature set, no cap
     tier_9m_min_months:  9             # Annualised features, cap = 0.75
-    tier_6m_min_months:  6             # Limited features, cap = 0.50
-    # < 6 months → THIN automatically, policy floor only
+    tier_6m_min_months:  6             # Primary target window, cap = 0.50
+    tier_3m_min_months:  3             # Minimal window — THIN/SPARSE route likely
+    # < 2 months → OQS gate rejects (insufficient data for any estimate)
 
 # --- Transaction Filter ---
 transaction_filter:
@@ -135,7 +149,7 @@ models:
 observation:
   dev_start: "2024-01-01"
   dev_end: "2024-07-01"
-  min_history_months: 12
+  min_history_months: 6              # Minimum for pipeline eligibility; OQS gates quality
 
 # --- Advanced Modeling (SegmentModelTrainer) ---
 advanced_modeling:
@@ -185,6 +199,14 @@ advanced_modeling:
     presets: "medium_quality"
     excluded_model_types: ["NN_TORCH", "FASTAI"]
 
+  # Supervised persona router (Phase 3)
+  router:
+    thin_threshold: 0.50          # P(THIN) >= this → THIN assignment
+    n_estimators_s1: 200          # Stage 1 THIN binary: trees
+    n_estimators_s2: 300          # Stage 2 L0/L1/L2 multiclass: trees
+    learning_rate: 0.05
+    max_depth: 5
+
   # Segment trainer search config
   segment_trainer:
     cv_folds: 5
@@ -195,6 +217,7 @@ advanced_modeling:
   # When the router's top-class probability is below this threshold, blend
   # the top-2 persona models weighted by their probabilities.
   moe_confidence_threshold: 0.70
+  rbf_gamma: 4.0                    # RBF bandwidth for persona soft probs; higher = sharper
 
   # Persona stability smoothing (stateless exponential smoothing)
   # smoothed_probs = alpha * new_probs + (1 - alpha) * prev_probs
@@ -221,12 +244,18 @@ label_engineering:
   shrinkage_alpha: 1.0              # Ridge alpha for composite label OLS
   winsor_pct: 0.025                 # Winsorization at 2.5% tails
   segment_quantile_targets:         # Quantile target per segment for QUANTILE strategy
+    # New persona labels (Phase 2+)
     PAYROLL: 0.50
-    SALARY_LIKE: 0.40
-    SME: 0.30
-    GIG_FREELANCE: 0.25
+    L0:      0.40   # Stable structured — near-median
+    L1:      0.35   # P35 of retained inflow proxy (not raw credits — see label_engineering.py)
+    L2:      0.25   # Volatile/informal — conservative P25 lower bound
+    THIN:    0.35   # Policy floor — not ML-trained
+    PT:      0.35   # Pass-through — formula-based (not ML-trained)
+    # Legacy segment labels (backward compatibility)
+    SALARY_LIKE:      0.40
+    SME:              0.30
+    GIG_FREELANCE:    0.25
     PASSIVE_INVESTOR: 0.40
-    THIN: 0.35
 
 # --- Data Paths (relative to project root, actual data stays in GDZ) ---
 paths:

@@ -17,13 +17,19 @@ Label strategies:
   5. ROBUST           : Winsorized verified income (trim top/bottom 2.5%)
   6. LOG              : log(verified_income) — for log-scale model targets
 
-Segment-specific default quantile targets:
-  PAYROLL          → P50  (stable, use median)
-  SALARY_LIKE      → P40  (slight conservatism)
+Persona-specific default quantile targets (Phase 2+ labels):
+  PAYROLL → P50  (payroll verified; use median)
+  L0      → P40  (stable structured — near-median, slight conservatism)
+  L1      → P35  (of retained inflow proxy, NOT raw credits — see _quantile_label)
+               retained_inflow = median_credit_6m × retention_ratio_6m − commitment_proxy
+  L2      → P25  (volatile/informal — conservative P25 lower bound)
+  THIN    → P35  (thin file — limited data, lean conservative)
+
+Legacy segment quantile targets (backward compatibility):
+  SALARY_LIKE      → P40
   SME              → P30  (gross revenue >> income; conservative)
   GIG_FREELANCE    → P25  (highly volatile; very conservative)
   PASSIVE_INVESTOR → P40
-  THIN             → P35  (limited data; lean conservative)
 """
 
 import numpy as np
@@ -36,14 +42,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-# Segment-specific quantile targets for QUANTILE strategy
+# Persona-specific quantile targets for QUANTILE label strategy
 SEGMENT_QUANTILE_TARGETS = {
-    "PAYROLL":          0.50,
+    # Phase 2+ persona labels
+    "PAYROLL": 0.50,
+    "L0":      0.40,   # Stable structured — near-median
+    "L1":      0.35,   # Structured irregular — moderate conservatism
+    "L2":      0.25,   # Volatile/informal — conservative P25 lower bound
+    "THIN":    0.35,   # Thin file — lean conservative
+    # Legacy segment labels (backward compatibility)
     "SALARY_LIKE":      0.40,
     "SME":              0.30,
     "GIG_FREELANCE":    0.25,
     "PASSIVE_INVESTOR": 0.40,
-    "THIN":             0.35,
 }
 
 # Composite label feature columns (must exist in X)
@@ -360,6 +371,43 @@ class LabelEngineer:
 
         return labels.fillna(y_verified if hasattr(self, '_y') else 0)
 
+    def _l1_retained_inflow_proxy(self, X: pd.DataFrame) -> pd.Series:
+        """
+        Compute retained inflow proxy for L1 customers.
+
+        Formula:
+          retained_inflow = (median_credit_6m × retention_ratio_6m
+                             − avg_commitment_amount_12m × 0.30).clip(lower=0)
+
+        This is the base distribution for L1's QUANTILE label strategy.
+        Using the retained inflow proxy instead of raw credits corrects for:
+          • Pass-through float inflating gross credits
+          • Irregular large credits distorting the P35 upward
+          • Regular commitment outflows that represent obligations, not income
+
+        Gracefully falls back when features are unavailable:
+          • median_credit_6m → median_monthly_credit_12m
+          • retention_ratio_6m → 0.70 (assumed moderate retention)
+          • avg_commitment_amount_12m → 0 (no commitment deduction)
+        """
+        credit = X.get(
+            "median_credit_6m",
+            X.get("median_monthly_credit_12m", pd.Series(0.0, index=X.index))
+        )
+        retention = X.get(
+            "retention_ratio_6m",
+            pd.Series(0.70, index=X.index)
+        ).clip(0, 1)
+        commitment = X.get(
+            "avg_commitment_amount_12m",
+            pd.Series(0.0, index=X.index)
+        ).fillna(0.0)
+
+        retained = (credit * retention - commitment * 0.30).clip(lower=0)
+        # Fallback: if retained is zero (data missing), use 70% of gross credit
+        fallback = (credit * 0.70).clip(lower=0)
+        return retained.where(retained > 0, fallback).fillna(fallback)
+
     def _quantile_label(
         self,
         X: pd.DataFrame,
@@ -367,10 +415,16 @@ class LabelEngineer:
         segment_col: str,
     ) -> pd.Series:
         """
-        Segment-specific quantile of verified income.
+        Segment-specific quantile label.
 
-        E.g. SME: P30 of all SME verified incomes → conservative income target.
-        Applied as: each customer's label = that quantile of their segment's verified distribution.
+        For most segments: P-th quantile of verified income, blended with
+        each customer's individual verified income (70/30 shrinkage).
+
+        For L1 specifically: P35 of retained inflow proxy
+          (median_credit_6m × retention_ratio_6m − commitment_proxy)
+        instead of P35 of raw credits. This corrects L1's heterogeneous
+        bucket problem — gross credits include pass-through float and
+        irregular lump sums that distort the income target upward.
         """
         result = pd.Series(np.nan, index=X.index)
 
@@ -383,11 +437,17 @@ class LabelEngineer:
             else:
                 mask = pd.Series(True, index=X.index)
 
-            y_seg = y_verified[mask]
-            quantile_val = y_seg.quantile(q)
-            # Each customer in segment gets the segment-level quantile as a shrinkage anchor
-            # blended with their own verified income
-            blended = 0.70 * y_seg + 0.30 * quantile_val
+            if seg == "L1":
+                # L1: use retained inflow proxy as the base distribution,
+                # not raw verified income. The model is trained on this
+                # conservative anchor; MAE is still evaluated vs verified income.
+                y_base = self._l1_retained_inflow_proxy(X[mask])
+            else:
+                y_base = y_verified[mask]
+
+            quantile_val = y_base.quantile(q)
+            # Each customer gets segment quantile as shrinkage anchor
+            blended = 0.70 * y_base + 0.30 * quantile_val
             result[mask] = blended.values
 
         return result.fillna(y_verified)

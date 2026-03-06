@@ -4,12 +4,19 @@ Affordability Engine
 Computes Available Debt Servicing Capacity (ADSC) per customer.
 
 Formula:
-  Adjusted Income      = income_estimate × BCI haircut
-  Allowable Obligation = Adjusted Income × DSCR cap (BOT norm ~40%)
+  Adjusted Income      = PolicyIncome (no BCI haircut — BCI acts on DSCR only)
+  DSCR cap             = min(persona_dscr_cap, bci_band_dscr_cap)
+  Allowable Obligation = Adjusted Income × DSCR cap
   Existing Obligations = From transaction commitment category
   ADSC                 = Allowable Obligation − Existing Obligations
 
 ADSC > 0  AND  Adjusted Income ≥ 15,000 THB  →  AFFORDABLE
+
+BCI band DSCR caps (behavioural confidence gate):
+  HIGH      → 0.45   (best behaviour — can service higher share of income)
+  MEDIUM    → 0.40
+  LOW       → 0.35   (uncertain — tighter DSCR, refer for review)
+  VERY_LOW  → 0.30   (hard decline likely via PolicyEngine)
 """
 
 import pandas as pd
@@ -34,18 +41,28 @@ class AffordabilityEngine:
     # Default persona DSCR caps — overridden by config when present.
     # L2 is intentionally HIGHER (0.45) because its income estimate is already a
     # P30 lower bound. Applying a tight DSCR on top of an already-conservative
-    # estimate double-penalises unstructured income customers.
+    # estimate would double-penalise unstructured income customers.
     DEFAULT_PERSONA_DSCR = {
         "PAYROLL": 0.40,
         "L0":      0.40,
-        "L1":      0.38,   # slight conservatism — shrunk composite label
+        "L1":      0.38,   # slight conservatism — retained inflow proxy label
         "L2":      0.45,   # relaxed — income estimate is already P30 lower bound
         "THIN":    0.35,
+        "PT":      0.35,   # pass-through: formula-based income, moderate conservatism
         # Legacy segment names (before new persona system is live)
         "SALARY_LIKE":      0.40,
         "SME":              0.38,
         "GIG_FREELANCE":    0.45,
         "PASSIVE_INVESTOR": 0.40,
+    }
+
+    # BCI band DSCR caps — tighten when behavioural confidence is low.
+    # final dscr_used = min(persona_dscr, bci_band_dscr)
+    DEFAULT_BCI_BAND_DSCR = {
+        "HIGH":     0.45,
+        "MEDIUM":   0.40,
+        "LOW":      0.35,
+        "VERY_LOW": 0.30,
     }
 
     def __init__(self, config_path: str = "config/config.yaml"):
@@ -60,6 +77,12 @@ class AffordabilityEngine:
         self.persona_dscr = {
             **self.DEFAULT_PERSONA_DSCR,
             **config.get("bot_norms", {}).get("dscr_cap_by_persona", {}),
+        }
+
+        # BCI band DSCR caps: read from config if present, else use defaults
+        self.bci_band_dscr = {
+            **self.DEFAULT_BCI_BAND_DSCR,
+            **config.get("bci", {}).get("band_dscr_caps", {}),
         }
 
     def compute(
@@ -113,6 +136,18 @@ class AffordabilityEngine:
             ).fillna(self.dscr_cap)
         else:
             result["dscr_used"] = self.dscr_cap
+
+        # ── BCI band DSCR cap ─────────────────────────────────────────────────
+        # BCI band tightens the DSCR: final = min(persona_dscr, bci_band_dscr).
+        # This replaces the old income haircut — behavioural confidence now gates
+        # how much of income can be committed to debt, not the income itself.
+        if dscr_override is None and "bci_band" in bci_results.columns:
+            bci_band_dscr = (
+                bci_results["bci_band"].str.upper()
+                .map(self.bci_band_dscr)
+                .fillna(self.dscr_cap)
+            )
+            result["dscr_used"] = result["dscr_used"].combine(bci_band_dscr, min)
 
         # ── Existing obligations ──────────────────────────────────────────────
         # Base: loan/EMI commitments from transaction features

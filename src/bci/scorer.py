@@ -2,16 +2,20 @@
 BCI Scorer
 ────────────
 Aggregates the five BCI components into a final score [0–100]
-and assigns a BCI band with associated policy and haircut.
+and assigns a BCI band with associated policy and DSCR cap.
 
 BCI → Business Confidence Index:
   Answers: "How much should we trust this income estimate?"
 
 BCI Bands:
-  80–100 : HIGH       → STP, income at face value
-  60–79  : MEDIUM     → STP, 80% haircut
-  40–59  : LOW        → Manual review, 60% haircut
-  0–39   : VERY LOW   → Decline / Refer
+  80–100 : HIGH       → STP, DSCR cap 0.45
+  60–79  : MEDIUM     → STP, DSCR cap 0.40
+  40–59  : LOW        → Manual review, DSCR cap 0.35
+  0–39   : VERY LOW   → Decline / Refer, DSCR cap 0.30
+
+Income is NOT haircut by the BCI band.
+AdjustedIncome = PolicyIncome (income_estimate as delivered by MoE / policy formula).
+The BCI band tightens the AffordabilityEngine DSCR cap and drives the STP decision.
 """
 
 import pandas as pd
@@ -49,6 +53,7 @@ class BCIScorer:
         features: pd.DataFrame,
         income_results: pd.DataFrame,
         segment_col: str = "segment",
+        persona_col: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Compute BCI for all customers.
@@ -56,14 +61,20 @@ class BCIScorer:
         Parameters
         ----------
         features : pd.DataFrame
-            Customer-level feature matrix (from FeatureEngineer).
+            Customer-level feature matrix (from FeatureEngineer / SegmentationPipeline).
         income_results : pd.DataFrame
-            Output from IncomeEstimationPipeline.predict().
+            Output from SegmentModelTrainer.predict_with_metadata() or equivalent.
             Required columns:
               income_estimate, income_q25, income_q75,
               income_interval_width, model_confidence, income_source
         segment_col : str
-            Column name for segment in features dataframe.
+            Column in features holding the segment/persona label.
+            Default "segment" (backward compat). Pass "persona" to use
+            the Phase 2+ persona column directly.
+        persona_col : str, optional
+            Alias for segment_col. If provided, takes priority.
+            Convenience parameter so callers can write persona_col="persona"
+            without renaming their column.
 
         Returns
         -------
@@ -71,8 +82,18 @@ class BCIScorer:
           bci_stability, bci_segment_clarity, bci_data_richness,
           bci_model_confidence, bci_behavioral_consistency,
           bci_raw_score, bci_score (segment-capped),
-          bci_band, bci_policy, income_haircut, adjusted_income
+          bci_band, bci_policy, income_haircut (audit only),
+          adjusted_income (= income_estimate, no haircut applied)
         """
+        # Resolve which column to use: persona_col kwarg > segment_col arg > fallback
+        if persona_col is not None:
+            scol = persona_col
+        else:
+            scol = segment_col
+        # Auto-detect: prefer "persona" column if present and segment_col is default
+        if scol == "segment" and "persona" in features.columns and "segment" not in features.columns:
+            scol = "persona"
+
         result = pd.DataFrame(index=features.index)
 
         # ── Component 1: Income Stability ──────────────────────────────────
@@ -86,7 +107,7 @@ class BCIScorer:
 
         # ── Component 2: Segment Clarity ───────────────────────────────────
         result["bci_segment_clarity"] = BCIComponents.segment_clarity(
-            segment=features[segment_col],
+            segment=features[scol],
             dominant_credit_source_share=features["dominant_credit_source_share"],
             cv_monthly_credit=features["cv_monthly_credit_12m"],
             months_with_salary_pattern=features["months_with_salary_pattern"],
@@ -111,7 +132,7 @@ class BCIScorer:
             avg_total_debit_12m=features["avg_total_debit_12m"],
             avg_eom_balance_3m=features["avg_eom_balance_3m"],
             savings_rate_proxy=features["savings_rate_proxy"],
-            segment=features[segment_col],
+            segment=features[scol],
         )
 
         # ── Weighted Aggregation → Raw BCI Score [0–100] ───────────────────
@@ -125,7 +146,7 @@ class BCIScorer:
         )
 
         # ── Segment Cap ────────────────────────────────────────────────────
-        result["segment"] = features[segment_col]
+        result["segment"] = features[scol]
         result["segment_bci_cap"] = result["segment"].map(self.segment_caps).fillna(70)
         result["bci_score"] = result[["bci_raw_score", "segment_bci_cap"]].min(axis=1).round(1)
 
@@ -139,9 +160,10 @@ class BCIScorer:
         result["income_haircut"] = band_assignments["income_haircut"]
 
         # ── Adjusted Income ────────────────────────────────────────────────
-        result["adjusted_income"] = (
-            income_results["income_estimate"] * result["income_haircut"]
-        ).round(0)
+        # AdjustedIncome = PolicyIncome — no BCI haircut applied to income.
+        # The income_haircut field is retained for audit/explainability only.
+        # BCI band drives decisioning and DSCR cap tightening in AffordabilityEngine.
+        result["adjusted_income"] = income_results["income_estimate"].round(0)
 
         logger.info(f"BCI computed for {len(result):,} customers")
         logger.info(f"BCI band distribution:\n{result['bci_band'].value_counts()}")
